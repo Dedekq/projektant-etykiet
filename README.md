@@ -19,7 +19,7 @@ Plik do uruchomienia: `dist/ProjektantEtykiet.exe` (nie wymaga instalacji). Przy
 - **Baza danych** — łańcuch ODBC (np. `DSN=Produkcja;Trusted_Connection=yes`, `DRIVER={ODBC Driver 17 for SQL Server};SERVER=…;DATABASE=…;Trusted_Connection=yes`) albo ścieżka do pliku SQLite, plus zapytanie SQL. Kolumny wyniku = pola. Połączenie bez hasła zapisuje się w projekcie; z hasłem — nie.
 
 ## Pliki .etk
-Projekt to tekst JSON (obrazy w środku). Menu Plik → **„Otwieraj pliki .etk tym programem”** ustawia otwieranie dwuklikiem dla bieżącego konta Windows (bez administratora). Po przeniesieniu .exe kliknąć ponownie.
+Projekt to tekst JSON (obrazy w środku). Dwuklik na pliku .etk otwiera program: .exe przy każdym uruchomieniu sam ustawia to skojarzenie dla bieżącego konta Windows (bez administratora), także po przeniesieniu pliku .exe. Ręcznie: menu Plik → „Otwieraj pliki .etk tym programem”.
 
 ## Druk (przycisk „Rozmiar i drukarka”, Ctrl+L)
 - **TSC / TSPL** (główna: TSC MH341, 300 dpi) — wysyłka prosto na USB, bez instalowania sterownika; także kolejka Windows (RAW) lub TCP. Kalibracja nośnika = GAPDETECT. Przerwa między etykietami (domyślnie 3 mm) jest wysyłana zawsze — bez niej drukarka nie synchronizuje się z przerwami. Nawijanie = `SET REWIND ON` (wewnętrzny nawijak). Zakładka „Rolka i nawijanie” i okno druku pokazują rysunek rolki z kierunkiem wysuwu.

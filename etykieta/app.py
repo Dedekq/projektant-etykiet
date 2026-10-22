@@ -891,6 +891,11 @@ def main():
     if tr.load("qtbase_pl", QLibraryInfo.path(QLibraryInfo.TranslationsPath)):
         app.installTranslator(tr)
     app.setWindowIcon(theme.icon("label-outline", theme.BLUE))
+    try:
+        import fileassoc
+        fileassoc.ensure_registered()  # dwuklik na .etk działa bez szukania opcji w menu
+    except OSError:
+        pass  # brak dostępu do rejestru nie może blokować programu; opcja w menu pokaże błąd
     w = MainWindow()
     w.show()
     if len(sys.argv) > 1 and sys.argv[1].lower().endswith(".etk"):

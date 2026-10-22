@@ -160,4 +160,25 @@ except ValueError as ex:
     assert "Błąd zapytania" in str(ex)
 assert dialogs.has_password("DSN=x;UID=a;PWD=tajne") and not dialogs.has_password("DSN=x;Trusted_Connection=yes")
 
+# skojarzenie .etk: tymczasowy klucz HKCU (prawdziwe skojarzenia nietknięte), udajemy zbudowany .exe
+import subprocess  # noqa: E402
+import winreg  # noqa: E402
+import fileassoc  # noqa: E402
+root = r"Software\EtykietyTestSkojarzenia\Classes"
+real_exe, sys.frozen = sys.executable, True
+try:
+    sys.executable = r"C:\Program\ProjektantEtykiet.exe"
+    assert fileassoc.ensure_registered(root) is True                     # brak wpisu -> zapis
+    assert fileassoc.registered_command(root) == r'"C:\Program\ProjektantEtykiet.exe" "%1"'
+    assert fileassoc.ensure_registered(root) is False                    # już dobrze -> nic
+    sys.executable = r"D:\Nowe miejsce\ProjektantEtykiet.exe"
+    assert fileassoc.ensure_registered(root) is True                     # przeniesiony -> poprawka
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, root + r"\.etk\OpenWithProgids") as k:
+        assert winreg.QueryValueEx(k, fileassoc.PROG_ID)[0] == ""
+finally:
+    sys.executable, sys.frozen = real_exe, False
+    del sys.frozen
+    subprocess.run(["reg", "delete", r"HKCU\Software\EtykietyTestSkojarzenia", "/f"], capture_output=True)
+assert fileassoc.registered_command(root) is None
+
 print("SELFTEST OK")
