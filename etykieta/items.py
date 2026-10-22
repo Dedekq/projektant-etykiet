@@ -132,22 +132,34 @@ class LabelItemMixin:
             painter.setPen(QPen(QColor(0, 120, 215), 0, Qt.DashLine))
             painter.setBrush(Qt.NoBrush)
             painter.drawRect(self.boundingRect())
-            if self.resizable() and len(self.scene().selectedItems()) == 1:
-                hs = 7 / max(1e-6, painter.worldTransform().m11())  # stałe 7 px na ekranie przy każdym powiększeniu
-                painter.setPen(QPen(QColor(0, 120, 215), 0))
-                painter.setBrush(Qt.white)
-                for p in self.handles().values():
-                    painter.drawRect(QRectF(p.x() - hs / 2, p.y() - hs / 2, hs, hs))
+        # uchwyty rysuje widok (View.drawForeground): rysowane tutaj wychodziłyby poza boundingRect i zostawiały ślady
 
     # ---------------------------------------------------------- zmiana rozmiaru myszką
+    CORNERS = ("lt", "rt", "lb", "rb")
+    ALL_HANDLES = ("lt", "t", "rt", "l", "r", "lb", "b", "rb")
+
     def resizable(self):
         return not self.locked and self.scene() is not None and not self.scene().preview
 
+    def allowed_handles(self):
+        return self.ALL_HANDLES
+
     def handles(self):
-        """Uchwyty w układzie elementu: nazwa -> punkt. „r” szerokość, „b” wysokość, „rb” oba."""
+        """Uchwyty w układzie elementu: nazwa (l/r/t/b i narożniki) -> punkt na obrysie."""
         r = self.boundingRect()
-        return {"r": QPointF(r.right(), r.center().y()), "b": QPointF(r.center().x(), r.bottom()),
-                "rb": r.bottomRight()}
+        x = {"l": r.left(), "r": r.right()}
+        y = {"t": r.top(), "b": r.bottom()}
+        return {n: QPointF(next((x[c] for c in n if c in x), r.center().x()),
+                           next((y[c] for c in n if c in y), r.center().y())) for n in self.allowed_handles()}
+
+    def begin_resize(self):
+        """Stan na początku przeciągania (tekst zapamiętuje czcionki, żeby skalować bez narastania błędów)."""
+        return None
+
+    def resize_drag(self, state, handle, w_mm, h_mm):
+        """Przeciąganie uchwytu: w_mm/h_mm = rozmiar ramki pod myszą; osie spoza uchwytu bez zmian."""
+        horiz, vert = any(c in handle for c in "lr"), any(c in handle for c in "tb")
+        self.resize_to(w_mm if horiz else None, h_mm if vert else None)
 
     def resize_to(self, w_mm, h_mm):
         """Nowy rozmiar w mm (None = bez zmiany w tej osi). Domyślnie pola w/h."""
@@ -227,13 +239,44 @@ class TextItem(LabelItemMixin, QGraphicsTextItem):
         self.document().setHtml(d.get("html", ""))
         super().load({k: v for k, v in d.items() if k != "html"})
 
-    def handles(self):
-        # tekst ma tylko szerokość zawijania; wysokość wynika z treści
-        r = self.boundingRect()
-        return {"r": QPointF(r.right(), r.center().y())}
+    def allowed_handles(self):
+        # boki = szerokość zawijania; narożniki = skala czcionek (wysokość wynika z treści)
+        return ("lt", "rt", "l", "r", "lb", "rb")
 
     def resizable(self):
         return super().resizable() and not self.editing()
+
+    def begin_resize(self):
+        return self.document().toHtml(), self.width, self.size_mm()[1]
+
+    def resize_drag(self, state, handle, w_mm, h_mm):
+        html, width, h0 = state
+        if handle in self.CORNERS:
+            self.scale_fonts(html, width, max(0.1, h_mm / max(0.1, h0)))
+        else:
+            self.resize_to(w_mm, None)
+
+    def scale_fonts(self, html, width, factor):
+        """Odtwarza tekst z początku przeciągania i mnoży każdy rozmiar czcionki (co 0,5 pt, min. 2 pt)."""
+        doc = self.document()
+        doc.setHtml(html)
+        block = doc.begin()
+        while block.isValid():
+            it = block.begin()
+            while not it.atEnd():
+                frag = it.fragment()
+                if frag.isValid():
+                    c = QTextCursor(doc)
+                    c.setPosition(frag.position())
+                    c.setPosition(frag.position() + frag.length(), QTextCursor.KeepAnchor)
+                    cf = frag.charFormat()
+                    pt = cf.font().pointSizeF() if cf.font().pointSizeF() > 0 else doc.defaultFont().pointSizeF()
+                    cf.setFontPointSize(max(2.0, round(pt * factor * 2) / 2))
+                    c.setCharFormat(cf)
+                it += 1
+            block = block.next()
+        self.width = round(width * factor, 1) if width else 0.0
+        self.geometry_changed()
 
     def resize_to(self, w_mm, h_mm):
         if w_mm is not None:
@@ -474,6 +517,9 @@ class Code2DItem(LabelItemMixin, QGraphicsItem):
             self._m, self._ver, self._error = [], "", str(ex)
         super().geometry_changed()
 
+    def allowed_handles(self):
+        return self.CORNERS  # proporcje symbolu są stałe
+
     def resize_to(self, w_mm, h_mm):
         # kod 2D skaluje się tylko modułem — proporcje symbolu są stałe
         if self._m:
@@ -548,6 +594,9 @@ class ShapeItem(LabelItemMixin, QGraphicsItem):
             return [p for p in props if p[0] != "radius"]
         return props
 
+    def allowed_handles(self):
+        return ("l", "r") if self.kind == "line" else self.ALL_HANDLES  # linia: tylko końce, grubość w panelu
+
     def boundingRect(self):
         return QRectF(0, 0, mm(self.w), mm(self.h))
 
@@ -590,6 +639,9 @@ class ImageItem(LabelItemMixin, QGraphicsItem):
         if image is not None:
             self.set_image(image)
         self.geometry_changed()
+
+    def allowed_handles(self):
+        return self.CORNERS
 
     def resize_to(self, w_mm, h_mm):
         # obraz zawsze z zachowaniem proporcji

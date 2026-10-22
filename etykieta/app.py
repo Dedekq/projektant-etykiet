@@ -3,8 +3,8 @@ import json
 import os
 import sys
 
-from PySide6.QtCore import QLibraryInfo, QSize, Qt, QTimer, QTranslator
-from PySide6.QtGui import QAction, QFont, QImage, QKeySequence, QPainter, QTextCharFormat, QTextCursor
+from PySide6.QtCore import QLibraryInfo, QPointF, QRectF, QSize, Qt, QTimer, QTranslator
+from PySide6.QtGui import QAction, QColor, QFont, QImage, QKeySequence, QPainter, QPen, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox, QDockWidget, QDoubleSpinBox,
                                QFileDialog, QFontComboBox, QFormLayout, QFrame, QGraphicsView, QHBoxLayout,
                                QInputDialog, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit,
@@ -28,7 +28,9 @@ class View(QGraphicsView):
         self.setDragMode(QGraphicsView.RubberBandDrag)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setMouseTracking(True)
-        self._resize = None  # (element, uchwyt) w trakcie zmiany rozmiaru
+        # uchwyty i obrysy rysowane są nad elementami; pełne odświeżanie nie zostawia po nich śladów
+        self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
+        self._resize = None  # stan przeciągania uchwytu
 
     def wheelEvent(self, e):
         if e.modifiers() & Qt.ControlModifier:
@@ -36,23 +38,51 @@ class View(QGraphicsView):
         else:
             super().wheelEvent(e)
 
-    CURSORS = {"r": Qt.SizeHorCursor, "b": Qt.SizeVerCursor, "rb": Qt.SizeFDiagCursor}
+    HANDLE_PX = 10  # bok uchwytu na ekranie, niezależnie od powiększenia
+    # kursor dla uchwytu; przy obrocie o 90°/270° osie się zamieniają
+    CURSORS = [{"l": Qt.SizeHorCursor, "r": Qt.SizeHorCursor, "t": Qt.SizeVerCursor, "b": Qt.SizeVerCursor,
+                "lt": Qt.SizeFDiagCursor, "rb": Qt.SizeFDiagCursor, "rt": Qt.SizeBDiagCursor, "lb": Qt.SizeBDiagCursor},
+               {"l": Qt.SizeVerCursor, "r": Qt.SizeVerCursor, "t": Qt.SizeHorCursor, "b": Qt.SizeHorCursor,
+                "lt": Qt.SizeBDiagCursor, "rb": Qt.SizeBDiagCursor, "rt": Qt.SizeFDiagCursor, "lb": Qt.SizeFDiagCursor}]
+
+    def resize_target(self):
+        sel = self.scene().selectedItems()
+        if len(sel) == 1 and isinstance(sel[0], LabelItemMixin) and sel[0].resizable():
+            return sel[0]
+        return None
+
+    def drawForeground(self, painter, rect):
+        super().drawForeground(painter, rect)
+        it = self.resize_target()
+        if it is None:
+            return
+        hs = self.HANDLE_PX / max(1e-6, self.transform().m11())
+        painter.setPen(QPen(Qt.white, 0))
+        painter.setBrush(QColor(theme.BLUE))
+        for p in it.handles().values():
+            c = it.mapToScene(p)
+            painter.drawRect(QRectF(c.x() - hs / 2, c.y() - hs / 2, hs, hs))
 
     def handle_at(self, view_pos):
-        """Uchwyt zaznaczonego elementu pod kursorem (do 7 px), albo None."""
-        sel = self.scene().selectedItems()
-        if len(sel) != 1 or not isinstance(sel[0], LabelItemMixin) or not sel[0].resizable():
+        """Uchwyt zaznaczonego elementu pod kursorem albo None; narożniki mają pierwszeństwo."""
+        it = self.resize_target()
+        if it is None:
             return None
-        it = sel[0]
-        for name, p in it.handles().items():
-            if (self.mapFromScene(it.mapToScene(p)) - view_pos).manhattanLength() <= 9:
-                return it, name
-        return None
+        hits = [(n, (self.mapFromScene(it.mapToScene(p)) - view_pos).manhattanLength())
+                for n, p in it.handles().items()]
+        hits = [(len(n) == 1, d, n) for n, d in hits if d <= self.HANDLE_PX + 2]
+        return (it, min(hits)[2]) if hits else None
 
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton:
-            self._resize = self.handle_at(e.position().toPoint())
-            if self._resize:
+            hit = self.handle_at(e.position().toPoint())
+            if hit:
+                it, name = hit
+                r = it.boundingRect()
+                anchor = QPointF(r.right() if "l" in name else r.left(), r.bottom() if "t" in name else r.top())
+                # stała przekształcenia z chwili kliknięcia: obrót elementu wokół środka zmienia się wraz z rozmiarem
+                self._resize = dict(it=it, name=name, inv=it.sceneTransform().inverted()[0], rect=r,
+                                    anchor=it.mapToScene(anchor), state=it.begin_resize())
                 return
         super().mousePressEvent(e)
 
@@ -60,21 +90,37 @@ class View(QGraphicsView):
         p = self.mapToScene(e.position().toPoint())
         self.win.pos_label.setText(f"X {to_mm(p.x()):.1f} mm   Y {to_mm(p.y()):.1f} mm")
         if self._resize:
-            it, name = self._resize
-            local = it.mapFromScene(p)
-            snap = self.scene().snap_mm or 0.1
-            w = round(to_mm(local.x()) / snap) * snap if "r" in name else None
-            h = round(to_mm(local.y()) / snap) * snap if "b" in name else None
-            it.resize_to(w, h)
-            self.win.props.show_item(it)
+            self.drag_resize(p)
             return
         hit = self.handle_at(e.position().toPoint())
-        self.viewport().setCursor(self.CURSORS[hit[1]] if hit else Qt.ArrowCursor)
+        if hit:
+            self.viewport().setCursor(self.CURSORS[round(hit[0].rotation() / 90) % 2][hit[1]])
+        else:
+            self.viewport().unsetCursor()
         super().mouseMoveEvent(e)
+
+    def drag_resize(self, scene_pos):
+        s = self._resize
+        it, name, r = s["it"], s["name"], s["rect"]
+        local = s["inv"].map(scene_pos)
+        snap = self.scene().snap_mm or 0.1
+        q = lambda v: max(0.1, round(to_mm(v) / snap) * snap)
+        w = q(r.right() - local.x() if "l" in name else local.x() - r.left())
+        h = q(r.bottom() - local.y() if "t" in name else local.y() - r.top())
+        it.resize_drag(s["state"], name, w, h)
+        # przeciwna krawędź / narożnik zostaje w miejscu
+        nr = it.boundingRect()
+        anchor = it.mapToScene(QPointF(nr.right() if "l" in name else nr.left(),
+                                       nr.bottom() if "t" in name else nr.top()))
+        snap_mm, self.scene().snap_mm = self.scene().snap_mm, 0
+        it.setPos(it.pos() + s["anchor"] - anchor)
+        self.scene().snap_mm = snap_mm
 
     def mouseReleaseEvent(self, e):
         if self._resize:
+            it = self._resize["it"]
             self._resize = None
+            self.win.props.show_item(it)
             self.win.changed()
             return
         super().mouseReleaseEvent(e)

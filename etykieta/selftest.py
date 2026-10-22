@@ -118,7 +118,10 @@ r = ShapeItem("rect"); r.resize_to(30, 15); assert (r.w, r.h) == (30, 15)
 eb = BarcodeItem(); eb.resize_to((95 + 9) * 0.4, None); assert eb.module == 0.4, eb.module
 eb.resize_to(None, 20 + to_mm(eb._text_h())); assert abs(eb.bar_height - 20) < 1e-6
 qq = Code2DItem(); qq.resize_to(len(qq._m[0]) * 0.6, None); assert qq.module == 0.6
-tt = TextItem("abc"); tt.resize_to(37.04, None); assert tt.width == 37.0 and list(tt.handles()) == ["r"]
+tt = TextItem("abc"); tt.resize_to(37.04, None); assert tt.width == 37.0 and len(tt.handles()) == 6
+st = tt.begin_resize(); tt.scale_fonts(st[0], st[1], 2.0)  # narożnik tekstu: czcionka × 2, szerokość × 2
+assert tt.font_runs()[0][1] == 20 and tt.width == 74.0, (tt.font_runs(), tt.width)
+assert set(ShapeItem("line").handles()) == {"l", "r"} and len(Code2DItem().handles()) == 4
 
 # PDF417 i Aztec: obraz na 300 dpi odczytuje się jako ta sama treść
 import numpy as np  # noqa: E402

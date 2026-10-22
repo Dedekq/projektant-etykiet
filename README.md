@@ -8,7 +8,7 @@ Plik do uruchomienia: `dist/ProjektantEtykiet.exe` (nie wymaga instalacji). Przy
 - **Kody kreskowe**: EAN-13, EAN-8, UPC-A, EAN-14, Code 128, GS1-128, Code 39, ITF, Codabar. Moduł X w mm, wysokość kresek, tekst pod kodem.
 - **Kody 2D**: QR, Micro QR, DataMatrix, GS1 DataMatrix (dane jako `(01)05901234123457(10)PARTIA`), PDF417, Aztec.
 - Linia, prostokąt (zaokrąglenie), elipsa, obraz.
-- **Zmiana rozmiaru myszką**: uchwyty przy zaznaczonym elemencie (prawy bok, dolny bok, narożnik). Kod kreskowy zmienia moduł i wysokość kresek, kod 2D moduł, tekst szerokość zawijania, obraz rozmiar z zachowaniem proporcji.
+- **Zmiana rozmiaru myszką**: uchwyty przy zaznaczonym elemencie, przeciwna krawędź stoi w miejscu. Ramka/elipsa/kod kreskowy: 8 uchwytów; linia: 2 końce; tekst: narożniki skalują czcionkę, boki zmieniają szerokość zawijania; kod 2D i obraz: narożniki (stałe proporcje).
 - Układ: wyrównywanie, kolejność, kopiuj/wklej/duplikuj, strzałki (0,1 mm; z Shift 1 mm), przyciąganie do siatki, cofnij/ponów, blokada.
 
 ## Zmienne (w tekście i kodach)
@@ -42,7 +42,7 @@ Projekt to tekst JSON (obrazy w środku). Menu Plik → **„Otwieraj pliki .etk
 python -m pip install -r requirements.txt
 python -m PyInstaller --noconfirm --onefile --windowed --name ProjektantEtykiet --icon etykieta/ikona.ico --distpath dist --collect-data qtawesome etykieta/app.py
 ```
-Autotest: `python etykieta/selftest.py testout`
+Autotest: `python etykieta/selftest.py testout`; uchwyty myszką: `python etykieta/test_uchwyty.py`
 
 ## Historia zmian
 Kod jest w repozytorium git (gałąź `main` = wersja zaakceptowana). Zmiany robić na osobnej gałęzi i scalać po teście.
