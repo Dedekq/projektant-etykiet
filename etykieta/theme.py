@@ -6,7 +6,7 @@ os.environ.setdefault("QT_API", "pyside6")
 import qtawesome as qta  # noqa: E402
 from PySide6.QtCore import QEvent, QObject  # noqa: E402
 from PySide6.QtGui import QColor, QPalette  # noqa: E402
-from PySide6.QtWidgets import QComboBox, QStyledItemDelegate  # noqa: E402
+from PySide6.QtWidgets import QComboBox, QFontComboBox, QStyledItemDelegate  # noqa: E402
 
 
 class _ComboFix(QObject):
@@ -14,7 +14,8 @@ class _ComboFix(QObject):
     QStyledItemDelegate respektuje reguły ::item z arkusza stylów."""
 
     def eventFilter(self, obj, ev):
-        if ev.type() == QEvent.Polish and isinstance(obj, QComboBox) \
+        # QFontComboBox ma własny delegat z podglądem kroju — zostaje
+        if ev.type() == QEvent.Polish and isinstance(obj, QComboBox) and not isinstance(obj, QFontComboBox) \
                 and not isinstance(obj.itemDelegate(), QStyledItemDelegate):
             obj.setItemDelegate(QStyledItemDelegate(obj))
         return False

@@ -317,6 +317,9 @@ class MainWindow(QMainWindow):
                       "Drukuj etykiety na wybranej drukarce")
         tb.widgetForAction(pa).setObjectName("print")
         m.addSeparator()
+        self.act("Otwieraj pliki .etk tym programem", self.associate, None, m, None, "link-variant", theme.BLUE,
+                 "Dwuklik na pliku .etk otworzy go w tym programie (tylko dla Twojego konta Windows)")
+        m.addSeparator()
         self.act("Zakończ", self.close, None, m, None, "exit-to-app", theme.GRAY)
 
         # --- menu edycji
@@ -780,6 +783,16 @@ class MainWindow(QMainWindow):
     def print_dialog(self):
         self.scene.clearSelection()
         PrintDialog(self.doc(), self).exec()
+
+    def associate(self):
+        import fileassoc
+        try:
+            fileassoc.register()
+        except OSError as ex:
+            QMessageBox.critical(self, APP, f"Nie udało się ustawić otwierania plików .etk:\n{ex}")
+            return
+        QMessageBox.information(self, APP, "Gotowe. Dwuklik na pliku .etk otworzy go w tym programie.\n\n"
+                                           "Jeśli przeniesiesz program w inne miejsce, kliknij tę opcję ponownie.")
 
     def remember_db(self, conn, query):
         """Okno druku działa na kopii projektu; połączenie z bazą (bez hasła) zapisujemy w samym projekcie."""
