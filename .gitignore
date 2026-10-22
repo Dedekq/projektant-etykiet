@@ -1,0 +1,7 @@
+# zbudowany program i wyniki testów — odtwarzalne z kodu
+dist/
+build/
+testout/
+*.spec
+__pycache__/
+*.pyc
