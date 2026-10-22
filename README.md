@@ -6,12 +6,20 @@ Plik do uruchomienia: `dist/ProjektantEtykiet.exe` (nie wymaga instalacji). Przy
 ## Elementy
 - **Tekst** wielowierszowy — dwuklik = edycja. Zaznacz słowo i użyj paska formatowania (czcionka, rozmiar, B/I/U, kolor, „biały na czarnym”). Bez edycji format dotyczy całego tekstu. Szerokość (zawijanie), wyrównanie, interlinia w panelu.
 - **Kody kreskowe**: EAN-13, EAN-8, UPC-A, EAN-14, Code 128, GS1-128, Code 39, ITF, Codabar. Moduł X w mm, wysokość kresek, tekst pod kodem.
-- **Kody 2D**: QR, Micro QR, DataMatrix, GS1 DataMatrix (dane jako `(01)05901234123457(10)PARTIA`).
+- **Kody 2D**: QR, Micro QR, DataMatrix, GS1 DataMatrix (dane jako `(01)05901234123457(10)PARTIA`), PDF417, Aztec.
 - Linia, prostokąt (zaokrąglenie), elipsa, obraz.
+- **Zmiana rozmiaru myszką**: uchwyty przy zaznaczonym elemencie (prawy bok, dolny bok, narożnik). Kod kreskowy zmienia moduł i wysokość kresek, kod 2D moduł, tekst szerokość zawijania, obraz rozmiar z zachowaniem proporcji.
 - Układ: wyrównywanie, kolejność, kopiuj/wklej/duplikuj, strzałki (0,1 mm; z Shift 1 mm), przyciąganie do siatki, cofnij/ponów, blokada.
 
 ## Zmienne (w tekście i kodach)
-`{DATA}`, `{DATA+365}` (np. data przydatności), `{CZAS}`, `{LICZNIK}`, `{LICZNIK:6}` (z zerami), `{NazwaKolumny}` z pliku CSV (separator `;` lub `,`, UTF-8).
+`{DATA}`, `{DATA+365}` (np. data przydatności), `{CZAS}`, `{LICZNIK}`, `{LICZNIK:6}` (z zerami), `{NazwaKolumny}` z danych.
+
+## Dane do druku (okno DRUKUJ → „Wczytaj dane”)
+- **Plik Excel (.xlsx) lub CSV** — pierwszy arkusz, pierwszy wiersz = nazwy pól, każdy kolejny wiersz = jedna etykieta. Daty z Excela trafiają jako `dd.mm.rrrr`.
+- **Baza danych** — łańcuch ODBC (np. `DSN=Produkcja;Trusted_Connection=yes`, `DRIVER={ODBC Driver 17 for SQL Server};SERVER=…;DATABASE=…;Trusted_Connection=yes`) albo ścieżka do pliku SQLite, plus zapytanie SQL. Kolumny wyniku = pola. Połączenie bez hasła zapisuje się w projekcie; z hasłem — nie.
+
+## Pliki .etk
+Projekt to tekst JSON (obrazy w środku). Menu Plik → **„Otwieraj pliki .etk tym programem”** ustawia otwieranie dwuklikiem dla bieżącego konta Windows (bez administratora). Po przeniesieniu .exe kliknąć ponownie.
 
 ## Druk (przycisk „Rozmiar i drukarka”, Ctrl+L)
 - **TSC / TSPL** (główna: TSC MH341, 300 dpi) — wysyłka prosto na USB, bez instalowania sterownika; także kolejka Windows (RAW) lub TCP. Kalibracja nośnika = GAPDETECT. Przerwa między etykietami (domyślnie 3 mm) jest wysyłana zawsze — bez niej drukarka nie synchronizuje się z przerwami. Nawijanie = `SET REWIND ON` (wewnętrzny nawijak). Zakładka „Rolka i nawijanie” i okno druku pokazują rysunek rolki z kierunkiem wysuwu.
@@ -31,7 +39,10 @@ Plik do uruchomienia: `dist/ProjektantEtykiet.exe` (nie wymaga instalacji). Przy
 
 ## Budowanie .exe
 ```bash
-python -m pip install PySide6 python-barcode segno pystrich qtawesome pyinstaller
-python -m PyInstaller --noconfirm --onefile --windowed --name ProjektantEtykiet --distpath dist --collect-data qtawesome etykieta/app.py
+python -m pip install -r requirements.txt
+python -m PyInstaller --noconfirm --onefile --windowed --name ProjektantEtykiet --icon etykieta/ikona.ico --distpath dist --collect-data qtawesome etykieta/app.py
 ```
 Autotest: `python etykieta/selftest.py testout`
+
+## Historia zmian
+Kod jest w repozytorium git (gałąź `main` = wersja zaakceptowana). Zmiany robić na osobnej gałęzi i scalać po teście.
