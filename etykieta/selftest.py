@@ -133,4 +133,28 @@ arr = np.frombuffer(bytes(im.constBits()), np.uint8).reshape(im.height(), im.byt
 got = sorted((r.format.name, r.text) for r in zxingcpp.read_barcodes(arr))
 assert got == [("Aztec", "Ustronianka Aztec LOT 0007"), ("PDF417", "Ustronianka PDF417 LOT 0007")], got
 
+# źródła danych: Excel (data, liczba całkowita, pusty wiersz) i baza SQLite przez QtSql
+import openpyxl  # noqa: E402
+import dialogs  # noqa: E402
+xl = os.path.join(out, "dane.xlsx")
+wb = openpyxl.Workbook(); ws = wb.active
+ws.append(["Produkt", "EAN", "Data"]); ws.append(["Woda 1,5 l", 5901234123457.0, datetime.date(2027, 3, 1)])
+ws.append([None, None, None]); ws.append(["Woda 0,5 l", 5901234123464, None]); wb.save(xl)
+assert dialogs.read_data_file(xl) == [{"Produkt": "Woda 1,5 l", "EAN": "5901234123457", "Data": "01.03.2027"},
+                                      {"Produkt": "Woda 0,5 l", "EAN": "5901234123464", "Data": ""}]
+dbp = os.path.join(out, "dane.db")
+if os.path.exists(dbp):
+    os.remove(dbp)
+import sqlite3  # noqa: E402
+with sqlite3.connect(dbp) as con:
+    con.execute("CREATE TABLE p (Produkt TEXT, Partia INTEGER)"); con.execute("INSERT INTO p VALUES ('Woda', 42)")
+con.close()
+assert dialogs.read_sql(dbp, "SELECT Produkt, Partia FROM p") == [{"Produkt": "Woda", "Partia": "42"}]
+try:
+    dialogs.read_sql(dbp, "SELECT * FROM brak")
+    raise AssertionError("błędne zapytanie powinno zgłosić błąd")
+except ValueError as ex:
+    assert "Błąd zapytania" in str(ex)
+assert dialogs.has_password("DSN=x;UID=a;PWD=tajne") and not dialogs.has_password("DSN=x;Trusted_Connection=yes")
+
 print("SELFTEST OK")

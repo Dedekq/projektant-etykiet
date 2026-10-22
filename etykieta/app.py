@@ -781,6 +781,11 @@ class MainWindow(QMainWindow):
         self.scene.clearSelection()
         PrintDialog(self.doc(), self).exec()
 
+    def remember_db(self, conn, query):
+        """Okno druku działa na kopii projektu; połączenie z bazą (bez hasła) zapisujemy w samym projekcie."""
+        self.scene.print.update(db_conn=conn, db_query=query)
+        self.changed()
+
     def _save_path(self, title, filt, ext):
         base = os.path.splitext(self.path)[0] if self.path else self.scene.label.get("name", "etykieta")
         path, _ = QFileDialog.getSaveFileName(self, title, base + ext, filt)

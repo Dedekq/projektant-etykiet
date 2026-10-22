@@ -1,13 +1,14 @@
 """Okna dialogowe: ustawienia etykiety/drukarki i drukowanie."""
 import csv
 import datetime
+import re
 
 from PySide6.QtCore import QDate, QPointF, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtPrintSupport import QPrinter, QPrinterInfo, QPrintPreviewDialog
 from PySide6.QtWidgets import (QAbstractSpinBox, QButtonGroup, QCheckBox, QComboBox, QDateEdit, QDialog, QDialogButtonBox, QDoubleSpinBox,
                                QFileDialog, QFormLayout, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
-                               QMessageBox, QPushButton, QRadioButton, QScrollArea, QSpinBox, QTabWidget,
+                               QMessageBox, QPlainTextEdit, QPushButton, QRadioButton, QScrollArea, QSpinBox, QTabWidget,
                                QToolButton, QVBoxLayout, QWidget)
 
 import output
@@ -274,6 +275,94 @@ def read_csv(path):
         return list(csv.DictReader(fh, dialect=dialect))
 
 
+def cell_text(v):
+    """Wartość z Excela / bazy jako tekst na etykietę: daty po polsku, 12.0 → 12."""
+    if v is None:
+        return ""
+    if isinstance(v, (datetime.datetime, datetime.date)):
+        return v.strftime("%d.%m.%Y")
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return str(v)
+
+
+def read_xlsx(path):
+    """Pierwszy arkusz; pierwszy wiersz = nazwy pól; puste wiersze pomijane."""
+    import openpyxl
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    try:
+        rows = wb.worksheets[0].iter_rows(values_only=True)
+        head = [str(h).strip() if h is not None else f"Kolumna{i + 1}" for i, h in enumerate(next(rows, ()))]
+        return [dict(zip(head, map(cell_text, r))) for r in rows if any(v is not None for v in r)]
+    finally:
+        wb.close()
+
+
+def read_data_file(path):
+    return read_xlsx(path) if path.lower().endswith((".xlsx", ".xlsm")) else read_csv(path)
+
+
+def read_sql(conn, query):
+    """Wiersze z bazy: ścieżka do pliku .db/.sqlite = SQLite, inaczej łańcuch ODBC (DSN=…; albo DRIVER={…};…)."""
+    from PySide6.QtSql import QSqlDatabase, QSqlQuery
+    driver = "QSQLITE" if conn.strip().lower().endswith((".db", ".sqlite", ".sqlite3")) else "QODBC"
+    name = "etykiety_dane"
+    db = QSqlDatabase.addDatabase(driver, name)
+    try:
+        db.setDatabaseName(conn.strip())
+        if not db.open():
+            raise OSError("Nie można połączyć z bazą: " + db.lastError().text())
+        q = QSqlQuery(db)
+        if not q.exec(query):
+            raise ValueError("Błąd zapytania: " + q.lastError().text())
+        rec = q.record()
+        names = [rec.fieldName(i) for i in range(rec.count())]
+        rows = []
+        while q.next():
+            rows.append({n: cell_text(q.value(i)) for i, n in enumerate(names)})
+        q.finish()
+        del q
+        db.close()
+        return rows
+    finally:
+        del db
+        QSqlDatabase.removeDatabase(name)
+
+
+class DbDialog(QDialog):
+    """Połączenie z bazą i zapytanie SQL; hasła nie są zapisywane w projekcie."""
+
+    def __init__(self, conn, query, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Dane z bazy danych")
+        self.setWindowIcon(theme.icon("database", theme.TEAL))
+        self.setMinimumWidth(620)
+        f = QFormLayout(self)
+        self.conn = QLineEdit(conn)
+        self.conn.setPlaceholderText("DSN=Produkcja;Trusted_Connection=yes   albo   C:\\dane\\etykiety.db")
+        self.query = QPlainTextEdit(query or "SELECT * FROM Produkty")
+        self.query.setMaximumHeight(110)
+        f.addRow("Połączenie (ODBC / plik SQLite)", self.conn)
+        f.addRow("Zapytanie SQL", self.query)
+        hint = QLabel("Każda kolumna wyniku to pole {nazwa_kolumny} na etykiecie, każdy wiersz to jedna etykieta. "
+                      "Połączenie bez hasła (np. Trusted_Connection=yes) zostanie zapamiętane w projekcie.")
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        f.addRow(hint)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText(" Pobierz dane")
+        bb.button(QDialogButtonBox.Ok).setIcon(theme.icon("database-arrow-down", "white"))
+        bb.button(QDialogButtonBox.Cancel).setText(" Anuluj")
+        bb.button(QDialogButtonBox.Cancel).setObjectName("secondary")
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        f.addRow(bb)
+
+
+def has_password(conn):
+    return bool(re.search(r"(^|;)\s*(pwd|password)\s*=", conn, re.I))
+
+
 class PrintDialog(QDialog):
     def __init__(self, doc, parent=None):
         super().__init__(parent)
@@ -300,7 +389,7 @@ class PrintDialog(QDialog):
                              "ustawia się go we właściwościach sterownika")
         f.addRow("Tryb wyjścia (nawijanie)", self.mode)
         self.none = QRadioButton("Seria (licznik)"); self.none.setChecked(True)
-        self.use_csv = QRadioButton("Dane z pliku CSV")
+        self.use_csv = QRadioButton("Dane z pliku lub bazy")
         row = QHBoxLayout(); row.addWidget(self.none); row.addWidget(self.use_csv)
         f.addRow("Źródło danych", row)
         self.count = ispin(1, 1, 100000)
@@ -309,10 +398,15 @@ class PrintDialog(QDialog):
         self.step = ispin(1, -1000, 1000)
         f.addRow("Numeracja od", self.start)
         f.addRow("Co ile (krok)", self.step)
-        self.csv_btn = QPushButton(theme.icon("file-delimited", "white"), " Wybierz plik CSV…")
+        self.csv_btn = QPushButton(theme.icon("file-excel", "white"), " Plik Excel / CSV…")
         self.csv_btn.clicked.connect(self.pick_csv)
+        self.db_btn = QPushButton(theme.icon("database", "white"), " Baza danych…")
+        self.db_btn.clicked.connect(self.pick_db)
+        src = QHBoxLayout(); src.addWidget(self.csv_btn); src.addWidget(self.db_btn)
+        f.addRow("Wczytaj dane", src)
         self.csv_info = QLabel("—")
-        f.addRow(self.csv_btn, self.csv_info)
+        self.csv_info.setWordWrap(True)
+        f.addRow("", self.csv_info)
         self.date = QDateEdit(QDate.currentDate()); self.date.setCalendarPopup(True)
         f.addRow("Data na etykiecie", self.date)
         btns = QHBoxLayout()
@@ -336,17 +430,32 @@ class PrintDialog(QDialog):
         lay.addLayout(btns)
 
     def pick_csv(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Plik danych", "", "CSV (*.csv *.txt)")
-        if not path:
+        path, _ = QFileDialog.getOpenFileName(self, "Plik danych", "", "Excel lub CSV (*.xlsx *.xlsm *.csv *.txt)")
+        if path:
+            self._load(lambda: read_data_file(path), path.rsplit("/", 1)[-1])
+
+    def pick_db(self):
+        pr = self.doc["print"]
+        dlg = DbDialog(pr.get("db_conn", ""), pr.get("db_query", ""), self)
+        if not dlg.exec():
             return
+        conn, query = dlg.conn.text(), dlg.query.toPlainText()
+        if self._load(lambda: read_sql(conn, query), "baza danych"):
+            # do projektu trafia tylko połączenie bez hasła
+            pr.update(db_conn="" if has_password(conn) else conn, db_query=query)
+            if self.parent() is not None and hasattr(self.parent(), "remember_db"):
+                self.parent().remember_db(pr["db_conn"], query)
+
+    def _load(self, read, source):
         try:
-            self.rows = read_csv(path)
+            self.rows = read()
         except Exception as ex:
-            QMessageBox.critical(self, "CSV", f"Nie można odczytać pliku:\n{ex}")
-            return
+            QMessageBox.critical(self, "Dane", f"Nie można wczytać danych:\n{ex}")
+            return False
         cols = ", ".join("{" + c + "}" for c in (self.rows[0].keys() if self.rows else []))
-        self.csv_info.setText(f"{len(self.rows)} wierszy; pola: {cols}")
+        self.csv_info.setText(f"{source}: {len(self.rows)} wierszy; pola: {cols}")
         self.use_csv.setChecked(True)
+        return True
 
     def records(self):
         d = self.date.date()
@@ -354,7 +463,7 @@ class PrintDialog(QDialog):
                                         datetime.datetime.now().time())
         base = self.rows if self.use_csv.isChecked() else [{}] * self.count.value()
         if self.use_csv.isChecked() and not base:
-            raise ValueError("Wybierz plik CSV z danymi")
+            raise ValueError("Wczytaj dane z pliku Excel / CSV albo z bazy danych")
         return [dict(r, LICZNIK=self.start.value() + i * self.step.value(), __now=now) for i, r in enumerate(base)]
 
     def preview(self):

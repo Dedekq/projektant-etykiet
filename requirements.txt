@@ -4,6 +4,6 @@ segno==1.6.6
 pystrich
 qtawesome==1.4.2
 pyinstaller==6.22.3
-# zxing-cpp: kody PDF417 i Aztec; numpy: także test akceptacyjny
-zxing-cpp  # także PDF417 i Aztec w programie
+openpyxl==3.1.5   # dane z Excela
+zxing-cpp         # kody PDF417 i Aztec (oraz odczyt kodów w testach)
 numpy
