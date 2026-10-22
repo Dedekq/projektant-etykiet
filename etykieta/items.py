@@ -132,6 +132,30 @@ class LabelItemMixin:
             painter.setPen(QPen(QColor(0, 120, 215), 0, Qt.DashLine))
             painter.setBrush(Qt.NoBrush)
             painter.drawRect(self.boundingRect())
+            if self.resizable() and len(self.scene().selectedItems()) == 1:
+                hs = 7 / max(1e-6, painter.worldTransform().m11())  # stałe 7 px na ekranie przy każdym powiększeniu
+                painter.setPen(QPen(QColor(0, 120, 215), 0))
+                painter.setBrush(Qt.white)
+                for p in self.handles().values():
+                    painter.drawRect(QRectF(p.x() - hs / 2, p.y() - hs / 2, hs, hs))
+
+    # ---------------------------------------------------------- zmiana rozmiaru myszką
+    def resizable(self):
+        return not self.locked and self.scene() is not None and not self.scene().preview
+
+    def handles(self):
+        """Uchwyty w układzie elementu: nazwa -> punkt. „r” szerokość, „b” wysokość, „rb” oba."""
+        r = self.boundingRect()
+        return {"r": QPointF(r.right(), r.center().y()), "b": QPointF(r.center().x(), r.bottom()),
+                "rb": r.bottomRight()}
+
+    def resize_to(self, w_mm, h_mm):
+        """Nowy rozmiar w mm (None = bez zmiany w tej osi). Domyślnie pola w/h."""
+        if w_mm is not None:
+            self.w = max(0.5, w_mm)
+        if h_mm is not None:
+            self.h = max(0.1, h_mm)
+        self.geometry_changed()
 
     def size_mm(self):
         r = self.boundingRect()
@@ -202,6 +226,19 @@ class TextItem(LabelItemMixin, QGraphicsTextItem):
     def load(self, d):
         self.document().setHtml(d.get("html", ""))
         super().load({k: v for k, v in d.items() if k != "html"})
+
+    def handles(self):
+        # tekst ma tylko szerokość zawijania; wysokość wynika z treści
+        r = self.boundingRect()
+        return {"r": QPointF(r.right(), r.center().y())}
+
+    def resizable(self):
+        return super().resizable() and not self.editing()
+
+    def resize_to(self, w_mm, h_mm):
+        if w_mm is not None:
+            self.width = max(2.0, round(w_mm, 1))
+        self.geometry_changed()
 
     def start_edit(self):
         self.setTextInteractionFlags(Qt.TextEditorInteraction)
@@ -310,6 +347,15 @@ class BarcodeItem(LabelItemMixin, QGraphicsItem):
         f.setPointSizeF(self.font_size * 96 / dpi)
         f.setHintingPreference(QFont.PreferNoHinting)
         return f
+
+    def resize_to(self, w_mm, h_mm):
+        # szerokość kodu = moduł × liczba modułów (+ miejsce na 1. cyfrę EAN-13), wysokość = kreski + tekst
+        if w_mm is not None and self._pattern:
+            lead = 9 if self.show_text and self.symbology == "EAN-13" else 0
+            self.module = round(min(2.0, max(0.1, w_mm / (len(self._pattern) + lead))), 3)
+        if h_mm is not None:
+            self.bar_height = max(1.0, h_mm - to_mm(self._text_h()))
+        self.geometry_changed()
 
     def _ean(self):
         return self.symbology in ("EAN-13", "EAN-8") and "G" in self._pattern
@@ -428,6 +474,14 @@ class Code2DItem(LabelItemMixin, QGraphicsItem):
             self._m, self._ver, self._error = [], "", str(ex)
         super().geometry_changed()
 
+    def resize_to(self, w_mm, h_mm):
+        # kod 2D skaluje się tylko modułem — proporcje symbolu są stałe
+        if self._m:
+            q = self.quiet * 2
+            k = w_mm / (len(self._m[0]) + q) if w_mm is not None else h_mm / (len(self._m) + q)
+            self.module = round(min(5.0, max(0.1, k)), 3)
+        self.geometry_changed()
+
     def boundingRect(self):
         if self._error:
             return QRectF(0, 0, mm(20), mm(20))
@@ -536,6 +590,12 @@ class ImageItem(LabelItemMixin, QGraphicsItem):
         if image is not None:
             self.set_image(image)
         self.geometry_changed()
+
+    def resize_to(self, w_mm, h_mm):
+        # obraz zawsze z zachowaniem proporcji
+        ratio = self._img.height() / max(1, self._img.width())
+        w = w_mm if w_mm is not None else h_mm / max(1e-6, ratio)
+        super().resize_to(w, w * ratio)
 
     def set_image(self, img):
         self._img = img

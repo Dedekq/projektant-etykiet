@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 app = QApplication(sys.argv)
 
 import output  # noqa: E402
-from items import BarcodeItem, Code2DItem, LabelScene, ShapeItem, TextItem, mm, substitute  # noqa: E402
+from items import BarcodeItem, Code2DItem, LabelScene, ShapeItem, TextItem, mm, substitute, to_mm  # noqa: E402
 
 out = sys.argv[1] if len(sys.argv) > 1 else "."
 
@@ -113,6 +113,13 @@ output.export_dimensions(doc, os.path.join(out, "test-wymiary.pdf"), v, "test")
 output.roll_image(doc, v, doc["print"]).save(os.path.join(out, "test-glowica.png"))
 for f in ("test.pdf", "test.svg", "test.png", "test-wymiary.pdf"):
     assert os.path.getsize(os.path.join(out, f)) > 500, f
+# zmiana rozmiaru uchwytami: każdy typ przelicza swoje parametry
+r = ShapeItem("rect"); r.resize_to(30, 15); assert (r.w, r.h) == (30, 15)
+eb = BarcodeItem(); eb.resize_to((95 + 9) * 0.4, None); assert eb.module == 0.4, eb.module
+eb.resize_to(None, 20 + to_mm(eb._text_h())); assert abs(eb.bar_height - 20) < 1e-6
+qq = Code2DItem(); qq.resize_to(len(qq._m[0]) * 0.6, None); assert qq.module == 0.6
+tt = TextItem("abc"); tt.resize_to(37.04, None); assert tt.width == 37.0 and list(tt.handles()) == ["r"]
+
 # PDF417 i Aztec: obraz na 300 dpi odczytuje się jako ta sama treść
 import numpy as np  # noqa: E402
 import zxingcpp  # noqa: E402

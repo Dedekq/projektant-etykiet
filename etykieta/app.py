@@ -28,6 +28,7 @@ class View(QGraphicsView):
         self.setDragMode(QGraphicsView.RubberBandDrag)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setMouseTracking(True)
+        self._resize = None  # (element, uchwyt) w trakcie zmiany rozmiaru
 
     def wheelEvent(self, e):
         if e.modifiers() & Qt.ControlModifier:
@@ -35,12 +36,47 @@ class View(QGraphicsView):
         else:
             super().wheelEvent(e)
 
+    CURSORS = {"r": Qt.SizeHorCursor, "b": Qt.SizeVerCursor, "rb": Qt.SizeFDiagCursor}
+
+    def handle_at(self, view_pos):
+        """Uchwyt zaznaczonego elementu pod kursorem (do 7 px), albo None."""
+        sel = self.scene().selectedItems()
+        if len(sel) != 1 or not isinstance(sel[0], LabelItemMixin) or not sel[0].resizable():
+            return None
+        it = sel[0]
+        for name, p in it.handles().items():
+            if (self.mapFromScene(it.mapToScene(p)) - view_pos).manhattanLength() <= 9:
+                return it, name
+        return None
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self._resize = self.handle_at(e.position().toPoint())
+            if self._resize:
+                return
+        super().mousePressEvent(e)
+
     def mouseMoveEvent(self, e):
         p = self.mapToScene(e.position().toPoint())
         self.win.pos_label.setText(f"X {to_mm(p.x()):.1f} mm   Y {to_mm(p.y()):.1f} mm")
+        if self._resize:
+            it, name = self._resize
+            local = it.mapFromScene(p)
+            snap = self.scene().snap_mm or 0.1
+            w = round(to_mm(local.x()) / snap) * snap if "r" in name else None
+            h = round(to_mm(local.y()) / snap) * snap if "b" in name else None
+            it.resize_to(w, h)
+            self.win.props.show_item(it)
+            return
+        hit = self.handle_at(e.position().toPoint())
+        self.viewport().setCursor(self.CURSORS[hit[1]] if hit else Qt.ArrowCursor)
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
+        if self._resize:
+            self._resize = None
+            self.win.changed()
+            return
         super().mouseReleaseEvent(e)
         self.win.changed()
 
@@ -195,6 +231,9 @@ class MainWindow(QMainWindow):
         self.view = View(self.scene, self)
         self.setCentralWidget(self.view)
         self.scene.selectionChanged.connect(self.selection_changed)
+        # przy zamykaniu scena znika przed oknem i jej sygnał trafiłby do usuniętego obiektu
+        QApplication.instance().aboutToQuit.connect(
+            lambda: self.scene.selectionChanged.disconnect(self.selection_changed))
         self.scene.edited.connect(self.changed)
         self.props = PropertiesPanel(self)
         dock = QDockWidget("Właściwości elementu", self)
