@@ -53,6 +53,19 @@ def _gs1_segments(text):
     return DataMatrixData(*segs, encoding="ascii")
 
 
+def zxing_matrix(kind, data):
+    """PDF417 / Aztec przez zxing-cpp. Zwraca (macierz bool, opis korekcji). Piksel obrazu = moduł;
+    w PDF417 każdy wiersz ma 3 piksele wysokości, czyli standardową wysokość wiersza 3X."""
+    import zxingcpp
+    if not data:
+        raise ValueError(f"Pusta treść {kind}")
+    b = zxingcpp.create_barcode(data, getattr(zxingcpp.BarcodeFormat, kind))
+    img = b.to_image(scale=1, add_quiet_zones=False)
+    import numpy as np
+    arr = np.array(img)
+    return [[bool(v < 128) for v in row] for row in arr], f"korekcja {b.ec_level}"
+
+
 def datamatrix_matrix(data, gs1=False):
     """Zwraca (macierz bool, 'WxH')."""
     if not data:

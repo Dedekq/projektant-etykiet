@@ -391,7 +391,7 @@ class BarcodeItem(LabelItemMixin, QGraphicsItem):
 
 # ---------------------------------------------------------------- kody 2D
 
-CODE2D = ["QR", "Micro QR", "DataMatrix", "GS1 DataMatrix"]
+CODE2D = ["QR", "Micro QR", "DataMatrix", "GS1 DataMatrix", "PDF417", "Aztec"]
 
 
 class Code2DItem(LabelItemMixin, QGraphicsItem):
@@ -419,6 +419,8 @@ class Code2DItem(LabelItemMixin, QGraphicsItem):
                 self._m, self._ver = symbols.qr_matrix(data, self.ecc)
             elif self.symbology == "Micro QR":
                 self._m, self._ver = symbols.qr_matrix(data, self.ecc if self.ecc != "H" else "Q", micro=True)
+            elif self.symbology in ("PDF417", "Aztec"):
+                self._m, self._ver = symbols.zxing_matrix(self.symbology, data)
             else:
                 self._m, self._ver = symbols.datamatrix_matrix(data, gs1=self.symbology.startswith("GS1"))
             self._error = None
@@ -455,7 +457,8 @@ class Code2DItem(LabelItemMixin, QGraphicsItem):
         if self._error:
             return "BŁĄD: " + self._error
         n = len(self._m[0])
-        s = f"{self.symbology} wersja {self._ver}, {n}×{len(self._m)} modułów, moduł {self.module:.3f} mm, " \
+        ver = self._ver if self.symbology in ("PDF417", "Aztec") else f"wersja {self._ver}"
+        s = f"{self.symbology} {ver}, {n}×{len(self._m)} modułów, moduł {self.module:.3f} mm, " \
             f"symbol {n * self.module:.2f}×{len(self._m) * self.module:.2f} mm"
         if "QR" in self.symbology:
             s += f", korekcja {self.ecc}"

@@ -113,4 +113,17 @@ output.export_dimensions(doc, os.path.join(out, "test-wymiary.pdf"), v, "test")
 output.roll_image(doc, v, doc["print"]).save(os.path.join(out, "test-glowica.png"))
 for f in ("test.pdf", "test.svg", "test.png", "test-wymiary.pdf"):
     assert os.path.getsize(os.path.join(out, f)) > 500, f
+# PDF417 i Aztec: obraz na 300 dpi odczytuje się jako ta sama treść
+import numpy as np  # noqa: E402
+import zxingcpp  # noqa: E402
+s3 = LabelScene()
+for kind, x in (("PDF417", 3), ("Aztec", 60)):
+    c = Code2DItem(); c.set("symbology", kind); c.set("data", f"Ustronianka {kind} LOT {{LICZNIK:4}}")
+    c.set("module", 0.34); c.setPos(mm(x), mm(5)); s3.addItem(c)
+    assert c._error is None, c._error
+im = output.render_image(s3.to_doc(), {"LICZNIK": 7}, 300).convertToFormat(QImage.Format_Grayscale8)
+arr = np.frombuffer(bytes(im.constBits()), np.uint8).reshape(im.height(), im.bytesPerLine())[:, :im.width()]
+got = sorted((r.format.name, r.text) for r in zxingcpp.read_barcodes(arr))
+assert got == [("Aztec", "Ustronianka Aztec LOT 0007"), ("PDF417", "Ustronianka PDF417 LOT 0007")], got
+
 print("SELFTEST OK")
