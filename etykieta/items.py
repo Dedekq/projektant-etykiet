@@ -5,8 +5,8 @@ import html
 import re
 
 from PySide6.QtCore import QBuffer, QByteArray, QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import (QColor, QFont, QFontMetricsF, QImage, QPainter, QPainterPath, QPen,
-                           QTextBlockFormat, QTextCursor, QTextOption)
+from PySide6.QtGui import (QAbstractTextDocumentLayout, QColor, QFont, QFontMetricsF, QImage, QPainter,
+                           QPainterPath, QPalette, QPen, QTextBlockFormat, QTextCursor, QTextOption)
 from PySide6.QtWidgets import QGraphicsItem, QGraphicsScene, QGraphicsTextItem
 
 import symbols
@@ -186,6 +186,30 @@ class LabelItemMixin:
 ALIGN = {"do lewej": Qt.AlignLeft, "do środka": Qt.AlignHCenter, "do prawej": Qt.AlignRight,
          "wyjustuj": Qt.AlignJustify}
 
+# Qt układa tekst przy rozmiarze zaokrąglonym do pełnych pikseli ekranu (krok 0,75 pt, do ~10% szerokości).
+# Tekst jest więc rysowany z kopii dokumentu z czcionkami ×8, zmniejszonej ×1/8 — dokładnie do ~0,1%.
+HIRES = 8
+
+
+def scale_doc_fonts(doc, factor, exact):
+    """Mnoży rozmiar czcionki każdego fragmentu (exact=False: co 0,5 pt, min. 2 pt)."""
+    default_pt = doc.defaultFont().pointSizeF()
+    block = doc.begin()
+    while block.isValid():
+        it = block.begin()
+        while not it.atEnd():
+            frag = it.fragment()
+            if frag.isValid():
+                c = QTextCursor(doc)
+                c.setPosition(frag.position())
+                c.setPosition(frag.position() + frag.length(), QTextCursor.KeepAnchor)
+                cf = frag.charFormat()
+                pt = cf.font().pointSizeF() if cf.font().pointSizeF() > 0 else default_pt
+                cf.setFontPointSize(pt * factor if exact else max(2.0, round(pt * factor * 2) / 2))
+                c.setCharFormat(cf)
+            it += 1
+        block = block.next()
+
 
 class TextItem(LabelItemMixin, QGraphicsTextItem):
     kind = "text"
@@ -206,6 +230,7 @@ class TextItem(LabelItemMixin, QGraphicsTextItem):
         self.width = 0.0
         self.align = "do lewej"
         self.line_height = 100
+        self._exact = None  # od teraz rysowanie z dokładnego układu
         self.document().contentsChanged.connect(self._contents_changed)
         self.geometry_changed()
 
@@ -219,9 +244,12 @@ class TextItem(LabelItemMixin, QGraphicsTextItem):
         self.document().setHtml(value)
 
     def _contents_changed(self):
+        self._exact = None
+        self.prepareGeometryChange()
         self.setTransformOriginPoint(self.boundingRect().center())
 
     def geometry_changed(self):
+        self._exact = None
         self.setTextWidth(mm(self.width) if self.width > 0 else -1)
         opt = self.document().defaultTextOption()
         opt.setAlignment(ALIGN.get(self.align, Qt.AlignLeft))
@@ -256,38 +284,38 @@ class TextItem(LabelItemMixin, QGraphicsTextItem):
         else:
             self.resize_to(w_mm, None)
 
-    def scale_fonts(self, html, width, factor, exact=False):
-        """Odtwarza tekst z początku przeciągania i mnoży każdy rozmiar czcionki (co 0,5 pt, min. 2 pt;
-        exact=True bez zaokrągleń — do druku w powiększeniu)."""
-        doc = self.document()
-        doc.setHtml(html)
-        block = doc.begin()
-        while block.isValid():
-            it = block.begin()
-            while not it.atEnd():
-                frag = it.fragment()
-                if frag.isValid():
-                    c = QTextCursor(doc)
-                    c.setPosition(frag.position())
-                    c.setPosition(frag.position() + frag.length(), QTextCursor.KeepAnchor)
-                    cf = frag.charFormat()
-                    pt = cf.font().pointSizeF() if cf.font().pointSizeF() > 0 else doc.defaultFont().pointSizeF()
-                    cf.setFontPointSize(pt * factor if exact else max(2.0, round(pt * factor * 2) / 2))
-                    c.setCharFormat(cf)
-                it += 1
-            block = block.next()
-        self.width = (width * factor if exact else round(width * factor, 1)) if width else 0.0
+    def scale_fonts(self, html, width, factor):
+        """Odtwarza tekst z początku przeciągania i mnoży każdy rozmiar czcionki (co 0,5 pt, min. 2 pt)."""
+        self.document().setHtml(html)
+        scale_doc_fonts(self.document(), factor, exact=False)
+        self.width = round(width * factor, 1) if width else 0.0
         self.geometry_changed()
 
-    HIRES = 8
+    # ---------------------------------------------------------- dokładny układ (ekran = wydruk)
+    def _exact_doc(self):
+        """Kopia dokumentu z czcionkami ×HIRES, odświeżana po każdej zmianie treści lub układu."""
+        if self._exact is None:
+            src = self.document()
+            d = src.clone()
+            d.setDocumentMargin(0)
+            d.setDefaultTextOption(src.defaultTextOption())
+            scale_doc_fonts(d, HIRES, exact=True)  # najpierw fragmenty (liczone od domyślnej czcionki)
+            f = d.defaultFont()
+            f.setPointSizeF(src.defaultFont().pointSizeF() * HIRES)
+            d.setDefaultFont(f)
+            d.setTextWidth(mm(self.width) * HIRES if self.width > 0 else -1)
+            self._exact = d
+        return self._exact
 
-    def hires(self):
-        """Do druku: Qt układa tekst przy rozmiarze zaokrąglonym do pełnych pikseli ekranu (krok 0,75 pt,
-        do ~10% szerokości). Czcionki ×8 i zmniejszenie elementu ×1/8 daje układ dokładny do ~0,1%."""
-        top_left = self.mapToScene(QPointF(0, 0))
-        self.scale_fonts(self.document().toHtml(), self.width, self.HIRES, exact=True)
-        self.setScale(1 / self.HIRES)
-        self.setPos(self.pos() + top_left - self.mapToScene(QPointF(0, 0)))  # lewy górny róg jak w edytorze
+    def _use_exact(self):
+        # podczas pisania zostaje zwykły układ Qt: od niego zależą kursor i zaznaczanie
+        return getattr(self, "_exact", "brak") != "brak" and not self.editing()
+
+    def boundingRect(self):
+        if not self._use_exact():
+            return super().boundingRect()
+        s = self._exact_doc().size()
+        return QRectF(0, 0, s.width() / HIRES, s.height() / HIRES)
 
     def resize_to(self, w_mm, h_mm):
         if w_mm is not None:
@@ -295,6 +323,7 @@ class TextItem(LabelItemMixin, QGraphicsTextItem):
         self.geometry_changed()
 
     def start_edit(self):
+        self.prepareGeometryChange()  # przejście na zwykły układ Qt na czas pisania
         self.setTextInteractionFlags(Qt.TextEditorInteraction)
         self.setFocus(Qt.MouseFocusReason)
 
@@ -308,6 +337,7 @@ class TextItem(LabelItemMixin, QGraphicsTextItem):
     def stop_edit(self):
         if not self.editing():
             return
+        self.prepareGeometryChange()  # powrót do dokładnego układu
         self.setTextInteractionFlags(Qt.NoTextInteraction)
         c = self.textCursor()
         c.clearSelection()
@@ -326,9 +356,17 @@ class TextItem(LabelItemMixin, QGraphicsTextItem):
         return bool(self.textInteractionFlags() & Qt.TextEditable)
 
     def paint(self, painter, option, widget=None):
-        from PySide6.QtWidgets import QStyle
-        option.state &= ~QStyle.State_Selected  # własna ramka zaznaczenia
-        super().paint(painter, option, widget)
+        if self._use_exact():
+            painter.save()
+            painter.scale(1 / HIRES, 1 / HIRES)
+            ctx = QAbstractTextDocumentLayout.PaintContext()
+            ctx.palette.setColor(QPalette.Text, self.defaultTextColor())  # nie kolor z motywu systemu
+            self._exact_doc().documentLayout().draw(painter, ctx)
+            painter.restore()
+        else:
+            from PySide6.QtWidgets import QStyle
+            option.state &= ~QStyle.State_Selected  # własna ramka zaznaczenia
+            super().paint(painter, option, widget)
         self.paint_selection(painter)
 
     def content(self):

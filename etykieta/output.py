@@ -11,7 +11,7 @@ from PySide6.QtCore import QMarginsF, QPointF, QRectF, QSizeF, Qt
 from PySide6.QtGui import (QColor, QFont, QImage, QPageLayout, QPageSize, QPainter, QPdfWriter, QPen, QPolygonF,
                            QTextDocument, QTransform)
 
-from items import BarcodeItem, Code2DItem, LabelScene, TextItem, mm, to_mm
+from items import BarcodeItem, Code2DItem, LabelScene, mm, to_mm
 
 KIND_NAMES = {"text": "Tekst", "barcode": "Kod kreskowy", "code2d": "Kod 2D", "rect": "Prostokąt",
               "ellipse": "Elipsa", "line": "Linia", "image": "Grafika"}
@@ -21,15 +21,11 @@ def dots(v_mm, dpi):
     return round(v_mm / 25.4 * dpi)
 
 
-def build_scene(doc, vars=None, dpi=None, hires=True):
+def build_scene(doc, vars=None, dpi=None):
     """Scena do druku. Przy znanym DPI moduły kodów i ich pozycje wyrównuje do pełnych punktów głowicy,
     bo kreska o ułamku punktu drukuje się nierówno i psuje czytelność."""
     s = LabelScene(preview=True)
     s.load_doc(doc, vars if vars is not None else {})
-    if hires:
-        for it in s.label_items():
-            if isinstance(it, TextItem):
-                it.hires()
     if dpi:
         for it in s.label_items():
             if isinstance(it, (BarcodeItem, Code2DItem)):
@@ -494,9 +490,7 @@ def export_dimensions(doc, path, vars=None, author=""):
 
     # obrysy elementów z numerami i ich wymiary położenia
     sc = scale * k / mm(1)  # scena -> strona
-    # tabela z wymiarów elementów; scena do druku ma teksty w powiększeniu ×8 (TextItem.hires)
-    meta = build_scene(doc, vars, hires=False)  # zmienna trzyma scenę: bez niej Qt usuwa elementy z wierszy
-    rows = item_rows(meta)
+    rows = item_rows(s)
     for n, _, _, x, y, w, h, rot, _, it in rows:
         r = it.sceneBoundingRect()
         box = QRectF(origin.x() + r.x() * sc, origin.y() + r.y() * sc, r.width() * sc, r.height() * sc)

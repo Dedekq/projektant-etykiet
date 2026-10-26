@@ -171,7 +171,7 @@ def text_width_mm(pt):
 w70, x70 = text_width_mm(7.0); w75, x75 = text_width_mm(7.5)
 assert abs(w75 / w70 - 7.5 / 7.0) < 0.01, (w70, w75)   # bez poprawki: 49,4 vs 55,0 mm (+11%)
 assert abs(x70 - x75) < 0.15, (x70, x75)               # lewa krawędź stoi w miejscu
-meta = output.build_scene(doc, v, hires=False); rows = output.item_rows(meta)
+meta = output.build_scene(doc, v); rows = output.item_rows(meta)
 assert any("Arial 10 pt" in r[8] for r in rows), [r[8] for r in rows]  # tabela wymiarów bez ×8
 
 # skojarzenie .etk: tymczasowy klucz HKCU (prawdziwe skojarzenia nietknięte), udajemy zbudowany .exe
