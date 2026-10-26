@@ -463,15 +463,16 @@ class BarcodeItem(LabelItemMixin, QGraphicsItem):
                 txt = re.sub(r"\D", "", txt)  # pełny kod z python-barcode zawiera spacje i znak '>'
                 starts = sorted(x0 + a * m for a, _ in guards)
                 ends = sorted(x0 + b * m for _, b in guards)
-                left = QRectF(ends[1], h, starts[2] - ends[1], th)
-                right = QRectF(ends[3], h, starts[4] - ends[3], th)
                 if self.symbology == "EAN-13":
-                    painter.drawText(QRectF(0, h, x0 - m, th), Qt.AlignRight | Qt.AlignVCenter, txt[0])
+                    painter.drawText(QRectF(0, h, x0, th), Qt.AlignCenter, txt[0])  # pierwsza cyfra przed kodem
                     a, b = txt[1:7], txt[7:]
                 else:
                     a, b = txt[:4], txt[4:]
-                painter.drawText(left, Qt.AlignCenter, a)
-                painter.drawText(right, Qt.AlignCenter, b)
+                # każda cyfra pod swoim znakiem (7 modułów), jak w standardzie EAN
+                for digits, x_from, x_to in ((a, ends[1], starts[2]), (b, ends[3], starts[4])):
+                    cell = (x_to - x_from) / len(digits)
+                    for n, ch in enumerate(digits):
+                        painter.drawText(QRectF(x_from + n * cell, h, cell, th), Qt.AlignCenter, ch)
             else:
                 painter.drawText(QRectF(x0, h, len(p) * m, th), Qt.AlignCenter, txt)
         self.paint_selection(painter)
