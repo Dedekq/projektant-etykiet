@@ -256,8 +256,9 @@ class TextItem(LabelItemMixin, QGraphicsTextItem):
         else:
             self.resize_to(w_mm, None)
 
-    def scale_fonts(self, html, width, factor):
-        """Odtwarza tekst z początku przeciągania i mnoży każdy rozmiar czcionki (co 0,5 pt, min. 2 pt)."""
+    def scale_fonts(self, html, width, factor, exact=False):
+        """Odtwarza tekst z początku przeciągania i mnoży każdy rozmiar czcionki (co 0,5 pt, min. 2 pt;
+        exact=True bez zaokrągleń — do druku w powiększeniu)."""
         doc = self.document()
         doc.setHtml(html)
         block = doc.begin()
@@ -271,12 +272,22 @@ class TextItem(LabelItemMixin, QGraphicsTextItem):
                     c.setPosition(frag.position() + frag.length(), QTextCursor.KeepAnchor)
                     cf = frag.charFormat()
                     pt = cf.font().pointSizeF() if cf.font().pointSizeF() > 0 else doc.defaultFont().pointSizeF()
-                    cf.setFontPointSize(max(2.0, round(pt * factor * 2) / 2))
+                    cf.setFontPointSize(pt * factor if exact else max(2.0, round(pt * factor * 2) / 2))
                     c.setCharFormat(cf)
                 it += 1
             block = block.next()
-        self.width = round(width * factor, 1) if width else 0.0
+        self.width = (width * factor if exact else round(width * factor, 1)) if width else 0.0
         self.geometry_changed()
+
+    HIRES = 8
+
+    def hires(self):
+        """Do druku: Qt układa tekst przy rozmiarze zaokrąglonym do pełnych pikseli ekranu (krok 0,75 pt,
+        do ~10% szerokości). Czcionki ×8 i zmniejszenie elementu ×1/8 daje układ dokładny do ~0,1%."""
+        top_left = self.mapToScene(QPointF(0, 0))
+        self.scale_fonts(self.document().toHtml(), self.width, self.HIRES, exact=True)
+        self.setScale(1 / self.HIRES)
+        self.setPos(self.pos() + top_left - self.mapToScene(QPointF(0, 0)))  # lewy górny róg jak w edytorze
 
     def resize_to(self, w_mm, h_mm):
         if w_mm is not None:
@@ -362,7 +373,8 @@ class BarcodeItem(LabelItemMixin, QGraphicsItem):
              ("module", "Moduł X [mm]", "float", (0.1, 2.0)),
              ("bar_height", "Wysokość kresek [mm]", "mm", None),
              ("show_text", "Tekst pod kodem", "bool", None),
-             ("font_size", "Czcionka tekstu [pt]", "float", (4, 30))]
+             ("font_size", "Czcionka tekstu [pt]", "float", (4, 30)),
+             ("text_bold", "Tekst pogrubiony", "bool", None)]
 
     def __init__(self):
         super().__init__()
@@ -373,6 +385,7 @@ class BarcodeItem(LabelItemMixin, QGraphicsItem):
         self.bar_height = 20.0
         self.show_text = True
         self.font_size = 8.0
+        self.text_bold = False
         self.geometry_changed()
 
     def geometry_changed(self):
@@ -388,6 +401,7 @@ class BarcodeItem(LabelItemMixin, QGraphicsItem):
         # pt liczone są wg DPI urządzenia; scena ma już skalę 96 DPI, więc kompensujemy (PDF 600 dpi itp.)
         dpi = painter.device().logicalDpiY() if painter and painter.device() else 96
         f.setPointSizeF(self.font_size * 96 / dpi)
+        f.setBold(self.text_bold)
         f.setHintingPreference(QFont.PreferNoHinting)
         return f
 
