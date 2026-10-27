@@ -209,7 +209,7 @@ logfont = struct.pack("<5i", -200, 0, 0, 0, 700) + bytes(8) + "Arial".encode("ut
 stream = (cs("BarTender") + b"\xff\xff\x01\x00\x08\x00TextData" + struct.pack("<ii", 1378, 100) + bytes(12) + cs("")
           + cs("") + b"\x01" + cs("") + bytes(4) + cs("") + b"\x00\x01\x01" + bytes(21) + cs("Tekst 1") + bytes(16)
           + cs("(???) ???-????") + cs("")[:4] + b"\xff" * 4 + cs("Zażółć\rAla") + b"\x01" + cs("") + b"\xff\xff"
-          + cs("") + b"\x00\x00" + logfont + b"\xff" * 8 + struct.pack("<4i", 1, 0, 0, 0))
+          + cs("") + b"\x00\x00" + logfont + b"\xff" * 8 + struct.pack("<4i", 0, 1, 0, 0))  # bez zawijania, środek
 raw = (b"Bar Tender Format File\r\n<Metadata><TemplateSize>70 x 50 mm</TemplateSize></Metadata>\r\n"
        + zlib.compress(stream))
 bdoc, bwarn = btw.Importer(raw).run()
@@ -218,6 +218,9 @@ bt = make_item(bdoc["items"][0])
 assert bt.content() == "Zażółć\nAla" and bt.align == "do środka", (bt.content(), bt.align)
 assert abs(bt.get("x") + bt.size_mm()[0] / 2 - 35) < 0.05 and abs(bt.get("y") - 2.54) < 0.01  # zaczepienie: góra-środek
 assert "font-weight:700" in bdoc["items"][0]["html"] and "10pt" in bdoc["items"][0]["html"]
+# archiwum zgodne z BarTenderem 10.1 (ArchiveVersion 88634): nagłówek obiektu bez bajtu \x01
+old_raw = raw.replace(zlib.compress(stream), zlib.compress(stream.replace(cs("") + cs("") + b"\x01", cs("") + cs(""), 1)))
+assert make_item(btw.Importer(old_raw).run()[0]["items"][0]).content() == "Zażółć\nAla"
 try:
     btw.Importer(b"to nie jest btw")
     raise AssertionError("brak błędu dla złego pliku")
