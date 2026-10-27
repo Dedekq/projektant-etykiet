@@ -27,9 +27,14 @@ A Windows desktop app for designing and printing product labels, in the spirit o
 - **BarTender import (`.btw`)**: opens BarTender 2022 labels without BarTender installed.
   - Reads label size, rich text (bold runs, wrapping, alignment, the nine anchor points), EAN/UPC/Code 128/Code 39, and pictures.
   - A QR code stored as an SVG picture becomes an editable QR code.
-  - The result is saved as `.etk`. The `.btw` file is never modified, and writing `.btw` is not supported.
+  - The result is saved as `.etk`. The original `.btw` file is never modified.
   - The format is closed and was worked out from sample files. Anything unrecognised is skipped and listed after import.
   - Printer-resident fonts such as TSC Sans Serif are replaced with Arial, which is slightly wider.
+- **Save for BarTender (`.btw`)**: File → Save for BarTender writes a new `.btw` file from a label that was opened from `.btw`.
+  - The original file is kept inside the project as a template, so the `.etk` can be moved freely.
+  - The program writes text content, barcode data, the QR code (new SVG plus its CRC32) and element positions into a copy of the template, and regenerates the preview thumbnail.
+  - Fonts and sizes stay as in the template. Elements added in the program are not transferred, and elements deleted in the program stay in the `.btw`. A summary lists both after saving.
+  - Verified in BarTender 2022: the edited file opens with the new data.
 
 ### Build
 ```bash
@@ -72,6 +77,13 @@ Plik → Otwórz przyjmuje też pliki .btw z BarTendera 2022, bez instalowania B
 - Po imporcie etykietę zapisuje się jako .etk obok. Pliku .btw program nie zmienia ani nie zapisuje.
 - Format .btw jest zamknięty i został rozpoznany na przykładowych plikach. Czego program nie rozpozna, to pomija i wypisuje po imporcie.
 - Czcionki drukarki (np. TSC Sans Serif) program zastępuje Arialem, który jest nieco szerszy. Warto sprawdzić długie tytuły.
+
+### Zapis dla BarTendera (.btw)
+Plik → „Zapisz dla BarTendera (.btw)…” tworzy nowy plik .btw z etykiety otwartej wcześniej z pliku .btw.
+- Oryginalny plik jest wzorem i zostaje zapisany w projekcie .etk, więc projekt można przenosić bez pliku .btw.
+- Do kopii wzoru trafiają: treści tekstów, dane kodów kreskowych, kod QR (nowy obraz SVG z sumą CRC32) i położenie elementów. Miniatura podglądu jest generowana od nowa.
+- Czcionki i rozmiary zostają takie jak we wzorze. Elementy dodane w programie nie trafiają do .btw, a usunięte w programie zostają w .btw. Po zapisie program wypisuje jedne i drugie.
+- Sprawdzone w BarTenderze 2022: zmieniony plik otwiera się z nowymi danymi.
 
 ### Druk (przycisk „Rozmiar i drukarka”, Ctrl+L)
 - **TSC / TSPL** (główna drukarka: TSC MH341, 300 dpi):

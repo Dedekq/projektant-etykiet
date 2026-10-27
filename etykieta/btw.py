@@ -1,10 +1,15 @@
-"""Import etykiet BarTender (.btw) bez BarTendera.
+"""Etykiety BarTender (.btw) bez BarTendera: import i zapis na podstawie wzoru.
 
-Format jest zamknięty; rozpoznany na plikach BarTender 2016+ (archiwum MFC w strumieniu zlib):
+Format jest zamknięty; rozpoznany na plikach BarTender 2022 (archiwum MFC w strumieniu zlib):
 pozycje w milsach (1/1000 cala), 9 punktów zaczepienia, teksty jako fragmenty z czcionkami LOGFONT,
 kody EAN, obrazy (SVG/PNG/BMP/JPG). Czego nie rozpoznajemy, pomijamy i zgłaszamy w ostrzeżeniach.
-Zapis z powrotem do .btw nie jest możliwy — po imporcie etykietę zapisuje się jako .etk."""
+
+Zapis: nowego pliku od zera nie tworzymy. Import zapamiętuje cały plik jako wzór (doc["btw_template"])
+i przy każdym elemencie odnośnik do jego obiektu; zapis podmienia we wzorze treści, dane kodów, kod QR
+i pozycje (sprawdzone: BarTender otwiera tak zmieniony plik). Elementy dodane w programie nie trafiają do .btw."""
+import base64
 import copy
+import itertools
 import os
 import re
 import struct
@@ -50,15 +55,27 @@ def _i32(d, i):
     return struct.unpack_from("<i", d, i)[0]
 
 
-def document_stream(raw):
+def _cs(text):
+    """Tekst -> CString MFC (UTF-16, długość 1 bajt albo FF + 2 bajty)."""
+    b = text.encode("utf-16-le")
+    n = len(b) // 2
+    return b"\xff\xfe\xff" + (bytes([n]) if n < 255 else b"\xff" + n.to_bytes(2, "little")) + b
+
+
+def _stream(raw):
+    """(początek, treść) strumienia dokumentu: zlib od CString „BarTender” do końca pliku."""
     for m in re.finditer(rb"\x78[\x01\x5e\x9c\xda]", raw):
         try:
             out = zlib.decompressobj().decompress(raw[m.start():])
         except zlib.error:
             continue
         if out.startswith(b"\xff\xfe\xff\tB\x00a\x00r\x00T\x00e\x00n\x00d\x00e\x00r\x00"):
-            return out
+            return m.start(), out
     raise ValueError("To nie jest plik BarTendera (.btw) albo ta wersja formatu nie jest obsługiwana.")
+
+
+def document_stream(raw):
+    return _stream(raw)[1]
 
 
 def _class_ends(d):
@@ -127,12 +144,12 @@ def _fonts(d, a, b):
 
 
 def _values(d, a, b):
-    """Wartości źródeł danych w obiekcie: (tekst, koniec, własna czcionka albo None)."""
+    """Wartości źródeł danych w obiekcie: (tekst, koniec, własna czcionka albo None, początek CString)."""
     out = []
     for m in _VAL.finditer(d, a, b):
         text, e = _cstr(d, m.end())
         own = _logfont(d, e + 13) if d[e + 11] == 1 else None
-        out.append((text, e, own))
+        out.append((text, e, own, m.end() - 3))
     return out
 
 
@@ -145,8 +162,22 @@ def _text_box(d, a, b):
     return d[i - 25] == 1, _i32(d, i - 24), _i32(d, i - 20)
 
 
+def _fixed_box(d, o, vals):
+    """(stały rozmiar, szerokość, wysokość [mm]) pola tekstu."""
+    box = _text_box(d, vals[-1][1], o["stop"]) or (False, 0, 0)
+    return box[0] and box[1] > 0 and box[2] > 0, box[1] * MIL, box[2] * MIL
+
+
+def _shown(vals, fixed):
+    """Wartości tak, jak widać je w polu (\\n = nowy wiersz). Końcowe \\r BarTender pomija w polu o stałym
+    rozmiarze (jeden wiersz) i na końcu tekstu."""
+    return [(v[0].rstrip("\r") if fixed or n == len(vals) - 1 else v[0]).replace("\r", "\n")
+            for n, v in enumerate(vals)]
+
+
 class Importer:
     def __init__(self, raw):
+        self.raw = raw
         self.d = document_stream(raw)
         self.warnings = []
         m = re.search(rb"<TemplateSize>\s*([\d.,]+)\s*x\s*([\d.,]+)\s*(mm|cm|in)?\s*</TemplateSize>", raw)
@@ -184,26 +215,21 @@ class Importer:
             return None
         fonts = _fonts(d, o["end"], o["stop"])
         default = fonts[-1][1] if fonts else ("Arial", 10.0, False, False, False)
-        box = _text_box(d, vals[-1][1], o["stop"]) or (False, 0, 0)
-        fixed, bw, bh = box[0] and box[1] > 0 and box[2] > 0, box[1] * MIL, box[2] * MIL
+        fixed, bw, bh = _fixed_box(d, o, vals)
         p = _PARA.search(d, vals[-1][1], o["stop"])  # jeden format akapitu, za ostatnią wartością
         align, wrap, wrap_w = (p.group(1)[0], p.group(2)[0], _i32(p.group(3), 0)) if p else (0, 0, 0)
         item = items.TextItem("")
         doc = item.document()
         cur = QTextCursor(doc)
-        for n, (text, _e, own) in enumerate(vals):
-            fam, pt, bold, italic, under = own or default
-            if fixed:
-                text = text.rstrip("\r")  # pole o stałym rozmiarze: końcowe \r BarTender pomija (jeden wiersz)
-            elif n == len(vals) - 1:
-                text = text.rstrip("\r")
+        for v, text in zip(vals, _shown(vals, fixed)):
+            fam, pt, bold, italic, under = v[2] or default
             f = QTextCharFormat()
             f.setFontFamilies([self.family(fam)])
             f.setFontPointSize(pt)
             f.setFontWeight(QFont.Bold if bold else QFont.Normal)
             f.setFontItalic(italic)
             f.setFontUnderline(under)
-            for k, line in enumerate(text.split("\r")):
+            for k, line in enumerate(text.split("\n")):
                 if k:
                     cur.insertBlock()
                 cur.insertText(line, f)
@@ -353,11 +379,17 @@ class Importer:
                 self.warn(f"„{o['name']}” ({c}): typ obiektu nieobsługiwany — pominięto.")
                 it = None
             if it:
+                # odnośnik do obiektu wzoru: przy zapisie .btw tu trafią zmiany (dx/dy: róg elementu - zaczepienie)
+                it["btw"] = {"pos": o["pos"], "name": o["name"],
+                             "dx": round(it["x"] - o["x"] * MIL, 3), "dy": round(it["y"] - o["y"] * MIL, 3)}
+                if it["kind"] == "code2d":
+                    it["btw"]["qr"] = it["data"]
                 out.append(it)
         for face in sorted(self._replaced):
             self.warn(f"Czcionka „{face}” nie jest zainstalowana — zastąpiona Arial.")
         doc = {"version": 1, "label": {"w": round(self.w, 2), "h": round(self.h, 2), "radius": 0, "name": ""},
-               "print": copy.deepcopy(items.DEFAULT_PRINT), "items": out}
+               "print": copy.deepcopy(items.DEFAULT_PRINT), "items": out,
+               "btw_template": base64.b64encode(self.raw).decode()}
         return doc, self.warnings
 
 
@@ -367,3 +399,194 @@ def read_btw(path):
         doc, warnings = Importer(fh.read()).run()
     doc["label"]["name"] = os.path.splitext(os.path.basename(path))[0]
     return doc, warnings
+
+
+# ---------------------------------------------------------------- zapis na podstawie wzoru
+
+def _design(cls):
+    return cls in ("TextData", "PictureData") or cls.startswith("Bc")
+
+
+def _spread(parts, new):
+    """Nowy tekst rozłożony na wartości wzoru (każda ma swoją czcionkę): zmieniony odcinek trafia do wartości,
+    w której się zaczyna. -> (nowe wartości, czy połączono kilka wartości)."""
+    old = "".join(parts)
+    p = 0
+    while p < min(len(old), len(new)) and old[p] == new[p]:
+        p += 1
+    s = 0
+    while s < min(len(old), len(new)) - p and old[-1 - s] == new[-1 - s]:
+        s += 1
+    ends = list(itertools.accumulate(len(x) for x in parts))
+    starts = [e - len(x) for e, x in zip(ends, parts)]
+    i = next(k for k in range(len(parts)) if p <= ends[k] or k == len(parts) - 1)
+    if p == ends[i] and parts[i].endswith("\n") and i + 1 < len(parts):
+        i += 1  # pisanie zaraz po podziale wiersza należy do następnego wiersza
+    j = i
+    while j + 1 < len(parts) and starts[j + 1] < len(old) - s:
+        j += 1
+    out = list(parts)
+    out[i] = old[starts[i]:p] + new[p:len(new) - s] + old[len(old) - s:ends[j]]
+    for k in range(i + 1, j + 1):
+        out[k] = ""
+    return out, j > i
+
+
+def _svg_qr(data, ecc):
+    """SVG kodu QR w tym samym układzie co w plikach BarTendera (2 jednostki/moduł, margines 4 moduły)."""
+    m, _ = symbols.qr_matrix(data, ecc)
+    size = (len(m) + 8) * 2
+    path = "".join(f"M{8 + 2 * x},{8 + 2 * y}H{10 + 2 * x}V{10 + 2 * y}H{8 + 2 * x}z"
+                   for y, row in enumerate(m) for x, on in enumerate(row) if on)
+    return ("<?xml version='1.0' encoding='UTF-8'?>\n"
+            f'<svg width="{size}mm" height="{size}mm" version="1.1" viewBox="0 0 {size} {size}" '
+            f'xmlns="http://www.w3.org/2000/svg"><path d="{path}" id="qr-path" fill="#000000" fill-opacity="1" '
+            'fill-rule="nonzero" stroke="none"/></svg>').encode()
+
+
+class Writer:
+    def __init__(self, doc):
+        self.doc = doc
+        self.raw = base64.b64decode(doc["btw_template"])
+        self.start, self.d = _stream(self.raw)
+        self.edits, self.notes = [], []  # edycje: (od, do, nowe bajty) w strumieniu dokumentu
+
+    def note(self, s):
+        if s not in self.notes:
+            self.notes.append(s)
+
+    def text(self, o, it, label):
+        d = self.d
+        vals = _values(d, o["end"], o["stop"])
+        parts = _shown(vals, _fixed_box(d, o, vals)[0]) if vals else []
+        new = items.make_item(it).content().replace(" ", "\n")
+        if not vals or new == "".join(parts):
+            return
+        if re.search(r"\{[^}]+\}", new):
+            self.note(f"{label}: zmienne {{…}} BarTender pokaże jako zwykły tekst.")
+        out, merged = _spread(parts, new)
+        if merged:
+            self.note(f"{label}: zmiana objęła fragmenty o różnym formatowaniu — dostały format pierwszego.")
+        for v, was, now in zip(vals, parts, out):
+            if now != was:
+                tail = v[0][len(was):]  # końcowe \r, które BarTender pomija w polu
+                self.edits.append((v[3], v[1], _cs(now.replace("\n", "\r") + tail)))
+
+    def barcode(self, o, it, label):
+        d = self.d
+        vals = _values(d, o["end"], o["stop"])
+        if not vals:
+            return
+        if it["symbology"] != BARCODES.get(o["cls"]):
+            self.note(f"{label}: zmiany rodzaju kodu BarTender nie dostanie — zostaje {BARCODES.get(o['cls'], o['cls'])}.")
+            return
+        old, new = vals[0][0], it["data"]
+        if it["symbology"] in ("EAN-13", "EAN-8", "UPC-A"):
+            try:  # pełny numer z cyfrą kontrolną, jak w pliku BarTendera
+                new = re.sub(r"\D", "", symbols.barcode_modules(it["symbology"], new)[1])
+            except Exception as ex:
+                self.note(f"{label}: nieprawidłowe dane kodu ({ex}) — nie zapisano.")
+                return
+        if new == old:
+            return
+        for m in re.finditer(re.escape(_cs(old)), d[o["end"]:o["stop"]]):  # dane i ich druga kopia
+            self.edits.append((o["end"] + m.start(), o["end"] + m.end(), _cs(new)))
+
+    def qr(self, o, it, ref, label):
+        d = self.d
+        svg_tag = re.escape(_cs("svg"))
+        blob = None
+        for m in re.finditer(svg_tag + rb"([\s\S]{4})<", d[o["end"]:o["stop"]]):
+            a = o["end"] + m.end() - 1
+            n = _i32(m.group(1), 0)
+            if _i32(d, a + n + 10) & 0xFFFFFFFF == zlib.crc32(d[a:a + n]):  # za obrazem: CRC32 obrazu
+                blob = a, n
+        props = re.compile(svg_tag).search(d, o["end"], o["stop"])
+        if not blob or not props:
+            self.note(f"{label}: nie znaleziono obrazu kodu QR we wzorze — nie zapisano.")
+            return
+        a, n = blob
+        if it["data"] != ref.get("qr"):
+            try:
+                svg = _svg_qr(it["data"], it["ecc"])
+            except Exception as ex:
+                self.note(f"{label}: nieprawidłowe dane kodu QR ({ex}) — nie zapisano.")
+                return
+            self.edits += [(a - 4, a + n, struct.pack("<I", len(svg)) + svg),
+                           (a + n + 10, a + n + 14, struct.pack("<I", zlib.crc32(svg)))]
+        w = items.make_item(it).size_mm()[0]
+        e = props.end()  # rozmiar obrazu [mils] w ustawieniach obiektu
+        if abs(w - _i32(d, e + 32) * MIL) > 0.05:
+            self.edits.append((e + 32, e + 40, struct.pack("<ii", round(w / MIL), round(w / MIL))))
+
+    def preview(self, header):
+        """Nowy podgląd (miniatura w BarTenderze i w Windows): pierwszy PNG z długością przed nim."""
+        i = header.find(b"\x89PNG")
+        n = _i32(header, i - 4) if i >= 4 else 0
+        if n <= 0 or header[i + n - 8:i + n - 4] != b"IEND":
+            return header
+        import output
+        from PySide6.QtCore import QBuffer
+        old = QImage.fromData(QByteArray(header[i:i + n]))
+        side = old.width() or 734
+        lw, lh = self.doc["label"]["w"], self.doc["label"]["h"]
+        lab = output.render_image(self.doc, dpi=max(30, int((side - 4) / max(lw, lh) * 25.4)))
+        img = QImage(side, side, QImage.Format_RGB32)
+        img.fill(QColor(old.pixel(2, 2)) if not old.isNull() else QColor(112, 112, 112))
+        p = QPainter(img)
+        x0, y0 = (side - lab.width()) // 2, (side - lab.height()) // 2
+        p.drawImage(x0, y0, lab)
+        p.setPen(Qt.black)
+        p.drawRect(x0 - 1, y0 - 1, lab.width() + 1, lab.height() + 1)
+        p.end()
+        buf = QBuffer()
+        buf.open(QBuffer.WriteOnly)
+        img.save(buf, "PNG")
+        png = bytes(buf.data())
+        return header[:i - 4] + struct.pack("<I", len(png)) + png + header[i + n:]
+
+    def run(self):
+        objs = {o["pos"]: o for o in _objects(self.d) if _design(o["cls"])}
+        used = set()
+        for it in self.doc["items"]:
+            ref = it.get("btw") or {}
+            o = objs.get(ref.get("pos"))
+            content = items.make_item(it).content().replace("\n", " ")
+            label = f"„{content[:30]}”" if content else it["kind"]
+            if not o or o["name"] != ref.get("name") or o["pos"] in used:
+                self.note(f"{label}: dodany w programie — w pliku BarTendera go nie będzie.")
+                continue
+            used.add(o["pos"])
+            x, y = it["x"] - ref["dx"], it["y"] - ref["dy"]
+            if abs(x - o["x"] * MIL) > 0.01 or abs(y - o["y"] * MIL) > 0.01:
+                self.edits.append((o["pos"], o["pos"] + 8, struct.pack("<ii", round(x / MIL), round(y / MIL))))
+            if it.get("rotation"):
+                self.note(f"{label}: obrót nie jest zapisywany do BarTendera.")
+            if it["kind"] == "text" and o["cls"] == "TextData":
+                self.text(o, it, label)
+            elif it["kind"] == "barcode" and o["cls"].startswith("Bc"):
+                self.barcode(o, it, label)
+            elif it["kind"] == "code2d" and o["cls"] == "PictureData":
+                self.qr(o, it, ref, label)
+        for o in objs.values():
+            if o["pos"] not in used:
+                self.note(f"„{o['name']}”: usunięty w programie — w pliku BarTendera zostaje.")
+        d = self.d
+        for a, b, new in sorted(self.edits, key=lambda e: e[0], reverse=True):
+            d = d[:a] + new + d[b:]
+        level = {0x01: 1, 0x5e: 3, 0x9c: 6, 0xda: 9}[self.raw[self.start + 1]]
+        return self.preview(self.raw[:self.start]) + zlib.compress(d, level)
+
+
+def write_btw(doc, path):
+    """Zapis .btw: wzór z doc["btw_template"] z treściami, kodami i pozycjami elementów -> lista uwag."""
+    if not doc.get("btw_template"):
+        raise ValueError("Ta etykieta nie pochodzi z pliku BarTendera — brak wzoru .btw.")
+    w = Writer(doc)
+    data = w.run()
+    _stream(data)  # kontrola: plik da się odczytać
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as fh:
+        fh.write(data)
+    os.replace(tmp, path)  # zapis atomowy
+    return w.notes

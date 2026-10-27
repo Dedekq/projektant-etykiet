@@ -197,7 +197,7 @@ assert fileassoc.registered_command(root) is None
 
 # import .btw: sztuczny plik w układzie rozpoznanym w plikach BarTender 2022 (archiwum MFC w zlib)
 import struct  # noqa: E402
-import btw_import  # noqa: E402
+import btw  # noqa: E402
 from items import make_item  # noqa: E402
 
 
@@ -212,23 +212,51 @@ stream = (cs("BarTender") + b"\xff\xff\x01\x00\x08\x00TextData" + struct.pack("<
           + cs("") + b"\x00\x00" + logfont + b"\xff" * 8 + struct.pack("<4i", 1, 0, 0, 0))
 raw = (b"Bar Tender Format File\r\n<Metadata><TemplateSize>70 x 50 mm</TemplateSize></Metadata>\r\n"
        + zlib.compress(stream))
-bdoc, bwarn = btw_import.Importer(raw).run()
+bdoc, bwarn = btw.Importer(raw).run()
 assert (bdoc["label"]["w"], bdoc["label"]["h"]) == (70, 50) and not bwarn, bwarn
 bt = make_item(bdoc["items"][0])
 assert bt.content() == "Zażółć\nAla" and bt.align == "do środka", (bt.content(), bt.align)
 assert abs(bt.get("x") + bt.size_mm()[0] / 2 - 35) < 0.05 and abs(bt.get("y") - 2.54) < 0.01  # zaczepienie: góra-środek
 assert "font-weight:700" in bdoc["items"][0]["html"] and "10pt" in bdoc["items"][0]["html"]
 try:
-    btw_import.Importer(b"to nie jest btw")
+    btw.Importer(b"to nie jest btw")
     raise AssertionError("brak błędu dla złego pliku")
 except ValueError:
     pass
+
+
+def roundtrip(doc, name):
+    """Zapis .btw z wzoru i ponowny import."""
+    p = os.path.join(out, name)
+    notes = btw.write_btw(doc, p)
+    return btw.read_btw(p)[0], notes
+
+
+# zapis .btw: zmieniona treść i przesunięcie o 5 mm trafiają do wzoru, zaczepienie (góra-środek) zostaje
+bt.setPlainText("Zażółć\nAla ma kota")
+bt.setPos(bt.pos().x() + mm(5), bt.pos().y())
+bdoc["items"][0] = bt.to_dict()
+bdoc2, notes = roundtrip(bdoc, "test_zapis.btw")
+bt2 = make_item(bdoc2["items"][0])
+assert bt2.content() == "Zażółć\nAla ma kota" and not notes, (bt2.content(), notes)
+assert abs(bt2.get("x") + bt2.size_mm()[0] / 2 - 40) < 0.05 and abs(bt2.get("y") - 2.54) < 0.01
+assert btw._spread(["przez:", " Ustronianka\n"], "przez: Ustronianka i S-ka\n") == (["przez:", " Ustronianka i S-ka\n"], False)
+assert btw._spread(["A", "B", "C"], "AXC") == (["AX", "", "C"], True)
 sample_btw = os.path.join(os.path.dirname(__file__), "..", "..", "Etykiety", "V-MAX", "V-MAX Lemon.btw")
 if os.path.exists(sample_btw):  # prawdziwy plik użytkownika (poza repozytorium)
-    bdoc, bwarn = btw_import.read_btw(sample_btw)
+    bdoc, bwarn = btw.read_btw(sample_btw)
     kinds = [i["kind"] for i in bdoc["items"]]
     assert kinds == ["text", "barcode", "text", "text", "text", "code2d"], kinds
     assert bdoc["items"][1]["data"] == "590224174580" and abs(bdoc["items"][1]["bar_height"] - 12.5) < 0.05
     assert bdoc["items"][5]["data"].startswith("https://grupaeurocash.pl")
+    # bez zmian: te same dane po zapisie; po zmianach: nowy EAN, nowy QR (z sumą CRC), przesunięty QR
+    same, notes = roundtrip(bdoc, "test_bez_zmian.btw")
+    assert [i.get("data") for i in same["items"]] == [i.get("data") for i in bdoc["items"]] and not notes, notes
+    bdoc["items"][1]["data"] = "590123412345"
+    bdoc["items"][5]["data"] = "https://example.com/test-zapisu"
+    bdoc["items"][5]["x"] += 2
+    new, notes = roundtrip(bdoc, "test_zmiany.btw")
+    assert new["items"][1]["data"] == "590123412345" and new["items"][5]["data"] == "https://example.com/test-zapisu"
+    assert abs(new["items"][5]["x"] - bdoc["items"][5]["x"]) < 0.05 and not notes, notes
 
 print("SELFTEST OK")

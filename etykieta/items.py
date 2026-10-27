@@ -110,9 +110,12 @@ class LabelItemMixin:
         d = {"kind": self.kind}
         for key, *_ in self.all_props():
             d[key] = self.get(key)
+        if getattr(self, "btw", None):
+            d["btw"] = self.btw  # odnośnik do obiektu we wzorze BarTendera (zapis .btw)
         return d
 
     def load(self, d):
+        self.btw = d.get("btw")
         for key, *_ in self.PROPS:
             if key in d:
                 setattr(self, key, d[key])
@@ -769,6 +772,7 @@ class LabelScene(QGraphicsScene):
         self.preview = preview  # True = render do druku: bez siatki i obrysu
         self.label = {"w": 100.0, "h": 50.0, "radius": 2.0, "name": "Etykieta"}
         self.print = dict(DEFAULT_PRINT)
+        self.btw_template = None  # cały plik .btw (base64), z którego zaimportowano etykietę
         self.snap_mm = 0.0 if preview else 0.5
         self.grid = not preview
         self.update_rect()
@@ -830,10 +834,14 @@ class LabelScene(QGraphicsScene):
         items = []
         for i in self.label_items():
             items.append(i.to_dict())
-        return {"version": 1, "label": dict(self.label), "print": dict(self.print), "items": items}
+        doc = {"version": 1, "label": dict(self.label), "print": dict(self.print), "items": items}
+        if self.btw_template:
+            doc["btw_template"] = self.btw_template
+        return doc
 
     def load_doc(self, doc, vars=None):
         self.clear()
+        self.btw_template = doc.get("btw_template")
         self.label = {**self.label, **doc.get("label", {})}
         self.print = {**DEFAULT_PRINT, **doc.get("print", {})}
         for z, d in enumerate(doc.get("items", [])):
