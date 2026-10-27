@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox,
                                QPushButton, QScrollArea, QSizePolicy, QSpinBox, QToolBar, QToolButton,
                                QVBoxLayout, QWidget)
 
-import btw_import
+import btw
 import output
 import theme
 from dialogs import NewLabelDialog, PrintDialog, SettingsDialog
@@ -336,6 +336,8 @@ class MainWindow(QMainWindow):
         self.act("Otwórz", self.open_doc, QKeySequence.Open, m, tb, "folder-open", O, "Otwórz zapisaną etykietę")
         self.act("Zapisz", self.save_doc, QKeySequence.Save, m, tb, "content-save", B, "Zapisz etykietę do pliku")
         self.act("Zapisz jako…", lambda: self.save_doc(True), QKeySequence.SaveAs, m, None, "content-save-edit", B)
+        self.act("Zapisz dla BarTendera (.btw)…", self.save_btw, None, m, None, "file-export", O,
+                 "Nowy plik .btw na podstawie pliku BarTendera, z którego otwarto etykietę")
         tb.addSeparator()
         self.act("Cofnij", self.undo, QKeySequence.Undo, em, tb, "undo", T, "Cofnij ostatnią zmianę")
         self.act("Ponów", self.redo, QKeySequence.Redo, em, tb, "redo", T, "Przywróć cofniętą zmianę")
@@ -598,7 +600,7 @@ class MainWindow(QMainWindow):
         bartender = path.lower().endswith(".btw")
         try:
             if bartender:
-                doc, warnings = btw_import.read_btw(path)
+                doc, warnings = btw.read_btw(path)
             else:
                 with open(path, encoding="utf-8") as fh:
                     doc = json.load(fh)
@@ -611,7 +613,8 @@ class MainWindow(QMainWindow):
             self.load(doc)
             QTimer.singleShot(0, self.fit)
             QMessageBox.information(self, APP, "Zaimportowano etykietę BarTendera. Sprawdź ją i zapisz jako .etk "
-                                    "(pliku .btw program nie zmienia)."
+                                    "(pliku .btw program nie zmienia). Po zmianie treści możesz ją też zapisać "
+                                    "jako nowy plik BarTendera: Plik → Zapisz dla BarTendera."
                                     + ("\n\nUwagi:\n• " + "\n• ".join(warnings) if warnings else ""))
             return
         self.path = path
@@ -638,6 +641,28 @@ class MainWindow(QMainWindow):
         self.changed()
         self.mark_saved()
         return True
+
+    def save_btw(self):
+        doc = self.doc()
+        if not doc.get("btw_template"):
+            QMessageBox.information(self, APP, "Zapis dla BarTendera działa dla etykiet otwartych z pliku .btw — "
+                                    "ten plik jest wzorem, w którym program podmienia treści, kody i położenie.\n\n"
+                                    "Otwórz podobną etykietę .btw (Plik → Otwórz), zmień dane i zapisz ponownie.")
+            return
+        base = os.path.splitext(self.path or self.save_hint or self.scene.label.get("name", "etykieta"))[0]
+        hint = base + ".btw" if not os.path.exists(base + ".btw") else base + " (nowy).btw"
+        path, _ = QFileDialog.getSaveFileName(self, "Zapisz dla BarTendera", hint, "BarTender (*.btw)")
+        if not path:
+            return
+        try:
+            notes = btw.write_btw(doc, path)
+        except Exception as ex:  # nieznany wariant wzoru nie może zamknąć programu
+            QMessageBox.critical(self, APP, f"Nie zapisano pliku BarTendera:\n{ex}")
+            return
+        QMessageBox.information(self, APP, f"Zapisano {os.path.basename(path)}.\n\nDo BarTendera trafiają treści "
+                                "tekstów, dane kodów, kod QR i położenie elementów; czcionki i rozmiary zostają "
+                                "ze wzoru. Przed drukiem otwórz plik w BarTenderze i sprawdź."
+                                + ("\n\nUwagi:\n• " + "\n• ".join(notes) if notes else ""))
 
     def closeEvent(self, e):
         if self.confirm_discard():
