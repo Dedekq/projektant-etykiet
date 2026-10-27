@@ -195,4 +195,40 @@ finally:
     subprocess.run(["reg", "delete", r"HKCU\Software\EtykietyTestSkojarzenia", "/f"], capture_output=True)
 assert fileassoc.registered_command(root) is None
 
+# import .btw: sztuczny plik w układzie rozpoznanym w plikach BarTender 2022 (archiwum MFC w zlib)
+import struct  # noqa: E402
+import btw_import  # noqa: E402
+from items import make_item  # noqa: E402
+
+
+def cs(t):
+    return b"\xff\xfe\xff" + bytes([len(t)]) + t.encode("utf-16-le")
+
+
+logfont = struct.pack("<5i", -200, 0, 0, 0, 700) + bytes(8) + "Arial".encode("utf-16-le").ljust(64, b"\0")
+stream = (cs("BarTender") + b"\xff\xff\x01\x00\x08\x00TextData" + struct.pack("<ii", 1378, 100) + bytes(12) + cs("")
+          + cs("") + b"\x01" + cs("") + bytes(4) + cs("") + b"\x00\x01\x01" + bytes(21) + cs("Tekst 1") + bytes(16)
+          + cs("(???) ???-????") + cs("")[:4] + b"\xff" * 4 + cs("Zażółć\rAla") + b"\x01" + cs("") + b"\xff\xff"
+          + cs("") + b"\x00\x00" + logfont + b"\xff" * 8 + struct.pack("<4i", 1, 0, 0, 0))
+raw = (b"Bar Tender Format File\r\n<Metadata><TemplateSize>70 x 50 mm</TemplateSize></Metadata>\r\n"
+       + zlib.compress(stream))
+bdoc, bwarn = btw_import.Importer(raw).run()
+assert (bdoc["label"]["w"], bdoc["label"]["h"]) == (70, 50) and not bwarn, bwarn
+bt = make_item(bdoc["items"][0])
+assert bt.content() == "Zażółć\nAla" and bt.align == "do środka", (bt.content(), bt.align)
+assert abs(bt.get("x") + bt.size_mm()[0] / 2 - 35) < 0.05 and abs(bt.get("y") - 2.54) < 0.01  # zaczepienie: góra-środek
+assert "font-weight:700" in bdoc["items"][0]["html"] and "10pt" in bdoc["items"][0]["html"]
+try:
+    btw_import.Importer(b"to nie jest btw")
+    raise AssertionError("brak błędu dla złego pliku")
+except ValueError:
+    pass
+sample_btw = os.path.join(os.path.dirname(__file__), "..", "..", "Etykiety", "V-MAX", "V-MAX Lemon.btw")
+if os.path.exists(sample_btw):  # prawdziwy plik użytkownika (poza repozytorium)
+    bdoc, bwarn = btw_import.read_btw(sample_btw)
+    kinds = [i["kind"] for i in bdoc["items"]]
+    assert kinds == ["text", "barcode", "text", "text", "text", "code2d"], kinds
+    assert bdoc["items"][1]["data"] == "590224174580" and abs(bdoc["items"][1]["bar_height"] - 12.5) < 0.05
+    assert bdoc["items"][5]["data"].startswith("https://grupaeurocash.pl")
+
 print("SELFTEST OK")

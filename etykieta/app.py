@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox,
                                QPushButton, QScrollArea, QSizePolicy, QSpinBox, QToolBar, QToolButton,
                                QVBoxLayout, QWidget)
 
+import btw_import
 import output
 import theme
 from dialogs import NewLabelDialog, PrintDialog, SettingsDialog
@@ -271,6 +272,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.path = None
+        self.save_hint = None  # proponowana ścieżka zapisu etykiety bez pliku (np. po imporcie .btw)
         self.history, self.hpos = [], -1
         self.clipboard = []
         self.scene = LabelScene()
@@ -580,7 +582,7 @@ class MainWindow(QMainWindow):
             if not dlg.exec():
                 return
             doc["label"], doc["print"] = dlg.values()
-        self.path = None
+        self.path = self.save_hint = None
         self.load(doc)
         self.mark_saved()
         QTimer.singleShot(0, self.fit)
@@ -589,14 +591,28 @@ class MainWindow(QMainWindow):
         if not self.confirm_discard():
             return
         if not path:
-            path, _ = QFileDialog.getOpenFileName(self, "Otwórz etykietę", "", "Etykieta (*.etk)")
+            path, _ = QFileDialog.getOpenFileName(self, "Otwórz etykietę", "",
+                                                  "Etykiety (*.etk *.btw);;Etykieta (*.etk);;BarTender (*.btw)")
         if not path:
             return
+        bartender = path.lower().endswith(".btw")
         try:
-            with open(path, encoding="utf-8") as fh:
-                doc = json.load(fh)
-        except (OSError, ValueError) as ex:
+            if bartender:
+                doc, warnings = btw_import.read_btw(path)
+            else:
+                with open(path, encoding="utf-8") as fh:
+                    doc = json.load(fh)
+        except Exception as ex:  # nieznany wariant .btw nie może zamknąć programu
             QMessageBox.critical(self, APP, f"Nie można otworzyć pliku:\n{ex}")
+            return
+        if bartender:
+            # .btw tylko odczytujemy: zapis idzie do nowego pliku .etk obok
+            self.path, self.save_hint = None, os.path.splitext(path)[0] + ".etk"
+            self.load(doc)
+            QTimer.singleShot(0, self.fit)
+            QMessageBox.information(self, APP, "Zaimportowano etykietę BarTendera. Sprawdź ją i zapisz jako .etk "
+                                    "(pliku .btw program nie zmienia)."
+                                    + ("\n\nUwagi:\n• " + "\n• ".join(warnings) if warnings else ""))
             return
         self.path = path
         self.load(doc)
@@ -605,7 +621,8 @@ class MainWindow(QMainWindow):
 
     def save_doc(self, save_as=False):
         if save_as or not self.path:
-            path, _ = QFileDialog.getSaveFileName(self, "Zapisz etykietę", self.scene.label.get("name", ""),
+            path, _ = QFileDialog.getSaveFileName(self, "Zapisz etykietę",
+                                                  self.save_hint or self.scene.label.get("name", ""),
                                                   "Etykieta (*.etk)")
             if not path:
                 return False
@@ -898,7 +915,7 @@ def main():
         pass  # brak dostępu do rejestru nie może blokować programu; opcja w menu pokaże błąd
     w = MainWindow()
     w.show()
-    if len(sys.argv) > 1 and sys.argv[1].lower().endswith(".etk"):
+    if len(sys.argv) > 1 and sys.argv[1].lower().endswith((".etk", ".btw")):  # .btw przez „Otwórz za pomocą”
         w.open_doc(sys.argv[1])
     sys.exit(app.exec())
 

@@ -1,0 +1,369 @@
+"""Import etykiet BarTender (.btw) bez BarTendera.
+
+Format jest zamknięty; rozpoznany na plikach BarTender 2016+ (archiwum MFC w strumieniu zlib):
+pozycje w milsach (1/1000 cala), 9 punktów zaczepienia, teksty jako fragmenty z czcionkami LOGFONT,
+kody EAN, obrazy (SVG/PNG/BMP/JPG). Czego nie rozpoznajemy, pomijamy i zgłaszamy w ostrzeżeniach.
+Zapis z powrotem do .btw nie jest możliwy — po imporcie etykietę zapisuje się jako .etk."""
+import copy
+import os
+import re
+import struct
+import zlib
+
+from PySide6.QtCore import QByteArray, QRectF, Qt
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QImage, QPainter, QTextCharFormat, QTextCursor
+
+import items
+import symbols
+
+MIL = 0.0254  # mm
+
+BARCODES = {"BcEAN13Data": "EAN-13", "BcEAN8Data": "EAN-8", "BcUPCAData": "UPC-A", "BcCode128Data": "Code 128",
+            "BcCode39Data": "Code 39", "BcEAN14Data": "EAN-14", "BcITF14Data": "ITF", "BcCodabarData": "Codabar"}
+# klasy archiwum, które nie są elementami projektu (tło, formularz, ustawienia)
+IGNORED = {"BackgroundRFIDData", "BackgroundData", "DialogData", "ScreenDs", "ScriptEvent", "FormatData",
+           "NumberFormatData", "ImageHandle", "ImageHandleRef"}
+
+_TOK = re.compile(rb"\xff\xff[\x00-\x20]\x00([\x02-\x40])\x00|([\x01-\x7f])\x80")
+_HDR = re.compile(rb"\xff\xfe\xff\x00\x01\xff\xfe\xff\x00\x00\x00\x00\x00\xff\xfe\xff\x00\x00\x01([\s\S])\x00{21}\xff\xfe\xff")
+# shortcut: wartość źródła danych rozpoznajemy po domyślnej masce „(???) ???-????” przed nią — działa na
+# wszystkich znanych plikach; inna maska (zmieniona w BarTenderze) = brak treści i ostrzeżenie
+_VAL = re.compile(re.escape("(???) ???-????".encode("utf-16-le")) + rb"\xff\xfe\xff\x00\xff\xff\xff\xff\xff\xfe\xff")
+_FACE = re.compile(rb"[A-Z]\x00(?:[A-Za-z0-9 \-]\x00){1,30}\x00\x00")
+# blok liczb (float) za rozmiarem pola tekstu; pierwsza bywa różna (10,0 / 100,0)
+_SIZE = re.compile(rb"(?<=\x01\x00\x00\x00\x01\x00\x00\x00)[\s\S]{4}\x00\x00\x7a\x44\x00\x00\xa0\x42")
+# format akapitu za wartością: FF×8, wyrównanie (0/1/2), zawijanie (0/1), ?, szerokość zawijania [mils]
+_PARA = re.compile(rb"\xff{8}([\x00-\x03])\x00\x00\x00([\x00\x01])\x00\x00\x00[\s\S]{4}([\s\S]{4})")
+
+
+def _cstr(d, i):
+    """CString MFC (UTF-16) zaczynający się od długości w d[i] -> (tekst, koniec)."""
+    n = d[i]
+    i += 1
+    if n == 0xFF:
+        n = int.from_bytes(d[i:i + 2], "little")
+        i += 2
+    return d[i:i + 2 * n].decode("utf-16-le", "replace"), i + 2 * n
+
+
+def _i32(d, i):
+    return struct.unpack_from("<i", d, i)[0]
+
+
+def document_stream(raw):
+    for m in re.finditer(rb"\x78[\x01\x5e\x9c\xda]", raw):
+        try:
+            out = zlib.decompressobj().decompress(raw[m.start():])
+        except zlib.error:
+            continue
+        if out.startswith(b"\xff\xfe\xff\tB\x00a\x00r\x00T\x00e\x00n\x00d\x00e\x00r\x00"):
+            return out
+    raise ValueError("To nie jest plik BarTendera (.btw) albo ta wersja formatu nie jest obsługiwana.")
+
+
+def _class_ends(d):
+    """Indeksy klas MFC: nowa klasa (FFFF, schemat, nazwa) i odwołanie (0x8000|indeks) -> {koniec znacznika: klasa}."""
+    entries, ends, pos = [None], {}, 0
+    while m := _TOK.search(d, pos):
+        if m.group(1):
+            n = m.group(1)[0]
+            name = d[m.end():m.end() + n]
+            if re.fullmatch(rb"[A-Za-z][A-Za-z0-9_]+", name):
+                entries += [("class", name.decode()), ("obj", name.decode())]
+                ends[m.end() + n] = name.decode()
+                pos = m.end() + n
+            else:
+                pos = m.start() + 1
+            continue
+        v = m.group(2)[0]
+        if v < len(entries) and entries[v] and entries[v][0] == "class":
+            entries.append(("obj", entries[v][1]))
+            ends[m.end()] = entries[v][1]
+        pos = m.end()
+    return ends
+
+
+def _objects(d):
+    """Obiekty projektu: klasa, nazwa, x/y [mils], zaczepienie (0..8: wiersz*3+kolumna), zakres bajtów."""
+    ends = _class_ends(d)
+    found = []
+    for m in _HDR.finditer(d):
+        name, after = _cstr(d, m.end())
+        h = m.start()
+        for n in range(600):  # przed nagłówkiem CString dowolnej długości, a przed nim x, y
+            q = h - 4 - 2 * n if n < 255 else h - 6 - 2 * n
+            if d[q:q + 3] == b"\xff\xfe\xff" and (d[q + 3] == n if n < 255 else
+                                                  d[q + 3] == 0xFF and int.from_bytes(d[q + 4:q + 6], "little") == n):
+                break
+        else:
+            continue
+        cls = ends.get(q - 20)
+        if cls:
+            found.append({"cls": cls, "name": name, "x": _i32(d, q - 20), "y": _i32(d, q - 16),
+                          "anchor": m.group(1)[0], "pos": q - 20, "end": after})
+    for k, o in enumerate(found):
+        o["stop"] = found[k + 1]["pos"] if k + 1 < len(found) else len(d)
+    return found
+
+
+def _logfont(d, s):
+    """LOGFONTW od s -> (rodzina, pt, pogrubienie, kursywa, podkreślenie) albo None."""
+    if s < 0 or s + 92 > len(d):
+        return None
+    h, _w, _e, _o, weight = struct.unpack_from("<5i", d, s)
+    face = d[s + 28:s + 92].decode("utf-16-le", "replace").split("\x00")[0]
+    if not (0 < abs(h) < 5000 and weight % 100 == 0 and weight <= 900 and face[:1].isalpha()):
+        return None
+    return face, abs(h) / 20, weight >= 600, bool(d[s + 20]), bool(d[s + 21])  # wysokość w 1/20 pt
+
+
+def _fonts(d, a, b):
+    out = []
+    for m in _FACE.finditer(d, a, b):
+        f = _logfont(d, m.start() - 28)
+        if f:
+            out.append((m.start() - 28, f))
+    return out
+
+
+def _values(d, a, b):
+    """Wartości źródeł danych w obiekcie: (tekst, koniec, własna czcionka albo None)."""
+    out = []
+    for m in _VAL.finditer(d, a, b):
+        text, e = _cstr(d, m.end())
+        own = _logfont(d, e + 13) if d[e + 11] == 1 else None
+        out.append((text, e, own))
+    return out
+
+
+def _text_box(d, a, b):
+    """Blok rozmiaru pola tekstu: (stały rozmiar, szerokość, wysokość) [mils] albo None."""
+    hits = [m.start() for m in _SIZE.finditer(d, a, b)]
+    if not hits:
+        return None
+    i = hits[-1]
+    return d[i - 25] == 1, _i32(d, i - 24), _i32(d, i - 20)
+
+
+class Importer:
+    def __init__(self, raw):
+        self.d = document_stream(raw)
+        self.warnings = []
+        m = re.search(rb"<TemplateSize>\s*([\d.,]+)\s*x\s*([\d.,]+)\s*(mm|cm|in)?\s*</TemplateSize>", raw)
+        if not m:
+            raise ValueError("Brak rozmiaru etykiety w pliku .btw.")
+        k = {b"cm": 10, b"in": 25.4}.get(m.group(3), 1)
+        self.w, self.h = (float(v.replace(b",", b".")) * k for v in m.groups()[:2])
+        p = re.search(rb"<Printer>([^<]*)</Printer>", raw)
+        self.printer = p.group(1).decode("utf-8", "replace") if p else ""
+        self._families = set(QFontDatabase.families())
+        self._replaced = set()
+
+    def warn(self, s):
+        if s not in self.warnings:
+            self.warnings.append(s)
+
+    def family(self, face):
+        if face in self._families:
+            return face
+        self._replaced.add(face)  # czcionki drukarki (np. TSC Sans Serif) nie ma w Windows
+        return "Arial"
+
+    @staticmethod
+    def place(o, w, h):
+        """Lewy górny róg [mm] z punktu zaczepienia BarTendera i rozmiaru obiektu [mm]."""
+        col, row = o["anchor"] % 3, min(2, o["anchor"] // 3)
+        return o["x"] * MIL - col * w / 2, o["y"] * MIL - row * h / 2
+
+    # ------------------------------------------------------------ tekst
+    def text(self, o):
+        d = self.d
+        vals = _values(d, o["end"], o["stop"])
+        if not vals:
+            self.warn(f"„{o['name']}”: nie odczytano treści — pominięto.")
+            return None
+        fonts = _fonts(d, o["end"], o["stop"])
+        default = fonts[-1][1] if fonts else ("Arial", 10.0, False, False, False)
+        box = _text_box(d, vals[-1][1], o["stop"]) or (False, 0, 0)
+        fixed, bw, bh = box[0] and box[1] > 0 and box[2] > 0, box[1] * MIL, box[2] * MIL
+        p = _PARA.search(d, vals[-1][1], o["stop"])  # jeden format akapitu, za ostatnią wartością
+        align, wrap, wrap_w = (p.group(1)[0], p.group(2)[0], _i32(p.group(3), 0)) if p else (0, 0, 0)
+        item = items.TextItem("")
+        doc = item.document()
+        cur = QTextCursor(doc)
+        for n, (text, _e, own) in enumerate(vals):
+            fam, pt, bold, italic, under = own or default
+            if fixed:
+                text = text.rstrip("\r")  # pole o stałym rozmiarze: końcowe \r BarTender pomija (jeden wiersz)
+            elif n == len(vals) - 1:
+                text = text.rstrip("\r")
+            f = QTextCharFormat()
+            f.setFontFamilies([self.family(fam)])
+            f.setFontPointSize(pt)
+            f.setFontWeight(QFont.Bold if bold else QFont.Normal)
+            f.setFontItalic(italic)
+            f.setFontUnderline(under)
+            for k, line in enumerate(text.split("\r")):
+                if k:
+                    cur.insertBlock()
+                cur.insertText(line, f)
+        item.align = {1: "do środka", 2: "do prawej"}.get(align, "do lewej")
+        item.width = 0.0
+        item.geometry_changed()
+        if fixed:
+            # pole o stałym rozmiarze: BarTender dopasowuje czcionkę do ramki (zgodność z podglądem ±5%)
+            w, h = item.size_mm()
+            items.scale_doc_fonts(doc, 0.995 * min(bw / max(w, 0.01), bh / max(h, 0.01)), exact=True)
+            item.width = round(bw, 2)
+            item.geometry_changed()
+            x, y = self.place(o, bw, bh)
+            y += (bh - item.size_mm()[1]) / 2
+        else:
+            w = item.size_mm()[0]
+            # zawijanie tylko gdy wiersz naprawdę się nie mieści: Arial jest nieco szerszy od czcionek drukarki
+            wrap_mm = wrap_w * MIL if wrap and 0 < wrap_w * MIL * 1.08 < w else 0
+            item.width = round(wrap_mm or w + 0.2, 2)  # stała szerokość: wyrównanie wierszy działa
+            item.geometry_changed()
+            x, y = self.place(o, *item.size_mm())
+        item.setPos(items.mm(x), items.mm(y))
+        return item.to_dict()
+
+    # ------------------------------------------------------------ kod kreskowy
+    def barcode(self, o):
+        d = self.d
+        sym = BARCODES.get(o["cls"])
+        vals = _values(d, o["end"], o["stop"])
+        if not sym or not vals:
+            self.warn(f"„{o['name']}”: kod {o['cls'][2:-4] or o['cls']} nieobsługiwany — pominięto.")
+            return None
+        data = vals[0][0]
+        if sym == "EAN-13" and len(data) == 13:
+            data = data[:12]  # cyfrę kontrolną liczy program
+        elif sym == "EAN-8" and len(data) == 8:
+            data = data[:7]
+        item = items.BarcodeItem()
+        item.symbology, item.data = sym, data
+        # za drugą kopią danych: szerokość symbolu i wysokość kresek [mils]
+        m = re.compile(rb"\xff{8}([\s\S]{4})\x00\x00([\s\S]{4})\x00\x01").search(d, vals[0][1], o["stop"])
+        fonts = _fonts(d, vals[0][1], o["stop"])
+        if fonts:
+            fam, pt, bold, *_ = fonts[0][1]
+            item.font_size, item.text_bold = round(pt, 1), bold
+        item.geometry_changed()
+        if item._error:
+            self.warn(f"„{o['name']}”: nieprawidłowe dane kodu ({item._error}).")
+        if m and item._pattern:
+            item.module = round(_i32(m.group(1), 0) * MIL / len(item._pattern), 3)
+            item.bar_height = round(_i32(m.group(2), 0) * MIL, 2)
+        else:
+            self.warn(f"„{o['name']}”: nie odczytano rozmiaru kodu — przyjęto domyślny.")
+        item.geometry_changed()
+        lead = items.to_mm(item._lead())
+        w, h = item.size_mm()
+        x, y = self.place(o, w - lead, h)  # BarTender liczy położenie od pierwszej kreski
+        item.setPos(items.mm(x - lead), items.mm(y))
+        return item.to_dict()
+
+    # ------------------------------------------------------------ obraz
+    def picture(self, o):
+        d = self.d
+        m = re.compile(rb"\xff\xfe\xff\x03((?:[a-zA-Z]\x00){3})").search(d, o["end"], o["stop"])
+        data = None
+        if m:
+            e = m.end()
+            w, h = _i32(d, e + 32) * MIL, _i32(d, e + 36) * MIL
+            ext = m.group(1).decode("utf-16-le").lower()
+            for k in re.finditer(rb"\xff\xfe\xff\x03" + re.escape(m.group(1)) + rb"([\s\S]{4})", d[e:o["stop"]]):
+                n = _i32(k.group(1), 0)
+                blob = d[e + k.end():e + k.end() + n]
+                if 0 < n == len(blob):
+                    data = blob
+        if not data or w <= 0 or h <= 0:
+            self.warn(f"„{o['name']}”: nie odczytano obrazu — pominięto.")
+            return None
+        img = self.render(data, ext)
+        if img.isNull():
+            self.warn(f"„{o['name']}”: format obrazu {ext} nieobsługiwany — pominięto.")
+            return None
+        x, y = self.place(o, w, h)
+        qr = self.as_qr(img, w)
+        if qr:
+            qr.setPos(items.mm(x), items.mm(y))
+            return qr.to_dict()
+        item = items.ImageItem(img)
+        item.w, item.h = round(w, 2), round(h, 2)
+        item.setPos(items.mm(x), items.mm(y))
+        return item.to_dict()
+
+    @staticmethod
+    def render(data, ext):
+        if ext != "svg":
+            return QImage.fromData(QByteArray(data))
+        from PySide6.QtSvg import QSvgRenderer
+        r = QSvgRenderer(QByteArray(data))
+        if not r.isValid():
+            return QImage()
+        s = r.defaultSize().scaled(1600, 1600, Qt.KeepAspectRatio)
+        img = QImage(s, QImage.Format_RGB32)
+        img.fill(Qt.white)
+        p = QPainter(img)
+        r.render(p)
+        p.end()
+        # BarTender rysuje SVG bez pustych marginesów: kadr do treści
+        ink = [(x, y) for y in range(0, img.height(), 2) for x in range(0, img.width(), 2)
+               if QColor(img.pixel(x, y)).lightness() < 128]
+        if ink:
+            xs, ys = [p[0] for p in ink], [p[1] for p in ink]
+            img = img.copy(min(xs), min(ys), max(xs) - min(xs) + 2, max(ys) - min(ys) + 2)
+        return img
+
+    @staticmethod
+    def as_qr(img, w_mm):
+        """Obraz z kodem QR -> edytowalny kod QR tej samej wielkości (albo None)."""
+        try:
+            import zxingcpp
+            res = [r for r in zxingcpp.read_barcodes(img) if r.format.name == "QRCode"]
+        except Exception:
+            return None
+        if len(res) != 1 or not res[0].text:
+            return None
+        item = items.Code2DItem()
+        item.data, item.ecc = res[0].text, res[0].ec_level if res[0].ec_level in ("L", "M", "Q", "H") else "M"
+        item.geometry_changed()
+        if item._error:
+            return None
+        item.module = round(w_mm / len(item._m), 3)
+        item.geometry_changed()
+        return item
+
+    # ------------------------------------------------------------ całość
+    def run(self):
+        out = []
+        for o in _objects(self.d):
+            c = o["cls"]
+            if c in IGNORED:
+                continue
+            if c == "TextData":
+                it = self.text(o)
+            elif c.startswith("Bc"):
+                it = self.barcode(o)
+            elif c == "PictureData":
+                it = self.picture(o)
+            else:
+                self.warn(f"„{o['name']}” ({c}): typ obiektu nieobsługiwany — pominięto.")
+                it = None
+            if it:
+                out.append(it)
+        for face in sorted(self._replaced):
+            self.warn(f"Czcionka „{face}” nie jest zainstalowana — zastąpiona Arial.")
+        doc = {"version": 1, "label": {"w": round(self.w, 2), "h": round(self.h, 2), "radius": 0, "name": ""},
+               "print": copy.deepcopy(items.DEFAULT_PRINT), "items": out}
+        return doc, self.warnings
+
+
+def read_btw(path):
+    """Plik .btw -> (dokument .etk, lista ostrzeżeń). Wymaga działającej QApplication."""
+    with open(path, "rb") as fh:
+        doc, warnings = Importer(fh.read()).run()
+    doc["label"]["name"] = os.path.splitext(os.path.basename(path))[0]
+    return doc, warnings
