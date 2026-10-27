@@ -30,15 +30,16 @@ IGNORED = {"BackgroundRFIDData", "BackgroundData", "DialogData", "ScreenDs", "Sc
            "NumberFormatData", "ImageHandle", "ImageHandleRef"}
 
 _TOK = re.compile(rb"\xff\xff[\x00-\x20]\x00([\x02-\x40])\x00|([\x01-\x7f])\x80")
-_HDR = re.compile(rb"\xff\xfe\xff\x00\x01\xff\xfe\xff\x00\x00\x00\x00\x00\xff\xfe\xff\x00\x00\x01([\s\S])\x00{21}\xff\xfe\xff")
+# bajt \x01 po pierwszym pustym CString jest w archiwum 2022 (113002), nie ma go w zgodnym z BT 10.1 (88634)
+_HDR = re.compile(rb"\xff\xfe\xff\x00\x01?\xff\xfe\xff\x00\x00\x00\x00\x00\xff\xfe\xff\x00\x00\x01([\s\S])\x00{21}\xff\xfe\xff")
 # shortcut: wartość źródła danych rozpoznajemy po domyślnej masce „(???) ???-????” przed nią — działa na
 # wszystkich znanych plikach; inna maska (zmieniona w BarTenderze) = brak treści i ostrzeżenie
 _VAL = re.compile(re.escape("(???) ???-????".encode("utf-16-le")) + rb"\xff\xfe\xff\x00\xff\xff\xff\xff\xff\xfe\xff")
 _FACE = re.compile(rb"[A-Z]\x00(?:[A-Za-z0-9 \-]\x00){1,30}\x00\x00")
 # blok liczb (float) za rozmiarem pola tekstu; pierwsza bywa różna (10,0 / 100,0)
 _SIZE = re.compile(rb"(?<=\x01\x00\x00\x00\x01\x00\x00\x00)[\s\S]{4}\x00\x00\x7a\x44\x00\x00\xa0\x42")
-# format akapitu za wartością: FF×8, wyrównanie (0/1/2), zawijanie (0/1), ?, szerokość zawijania [mils]
-_PARA = re.compile(rb"\xff{8}([\x00-\x03])\x00\x00\x00([\x00\x01])\x00\x00\x00[\s\S]{4}([\s\S]{4})")
+# format akapitu za wartością: FF×8, zawijanie (0/1), wyrównanie (0 lewo, 1 środek, 2 prawo), ?, szerokość zawijania
+_PARA = re.compile(rb"\xff{8}([\x00\x01])\x00\x00\x00([\x00-\x03])\x00\x00\x00[\s\S]{4}([\s\S]{4})")
 
 
 def _cstr(d, i):
@@ -217,12 +218,14 @@ class Importer:
         default = fonts[-1][1] if fonts else ("Arial", 10.0, False, False, False)
         fixed, bw, bh = _fixed_box(d, o, vals)
         p = _PARA.search(d, vals[-1][1], o["stop"])  # jeden format akapitu, za ostatnią wartością
-        align, wrap, wrap_w = (p.group(1)[0], p.group(2)[0], _i32(p.group(3), 0)) if p else (0, 0, 0)
+        wrap, align, wrap_w = (p.group(1)[0], p.group(2)[0], _i32(p.group(3), 0)) if p else (0, 0, 0)
         item = items.TextItem("")
         doc = item.document()
         cur = QTextCursor(doc)
+        replaced = False
         for v, text in zip(vals, _shown(vals, fixed)):
             fam, pt, bold, italic, under = v[2] or default
+            replaced |= fam not in self._families
             f = QTextCharFormat()
             f.setFontFamilies([self.family(fam)])
             f.setFontPointSize(pt)
@@ -246,8 +249,11 @@ class Importer:
             y += (bh - item.size_mm()[1]) / 2
         else:
             w = item.size_mm()[0]
-            # zawijanie tylko gdy wiersz naprawdę się nie mieści: Arial jest nieco szerszy od czcionek drukarki
-            wrap_mm = wrap_w * MIL if wrap and 0 < wrap_w * MIL * 1.08 < w else 0
+            # shortcut: Arial w miejsce czcionki drukarki (TSC Sans Serif) jest ~12% szerszy — poszerzamy zawijanie,
+            # żeby wiersze łamały się jak w BarTenderze; dokładnie byłoby z metrykami czcionki drukarki
+            wrap_k = 1.12 if replaced else 1.0
+            # zawijanie tylko gdy wiersz naprawdę się nie mieści
+            wrap_mm = wrap_w * MIL * wrap_k if wrap and 0 < wrap_w * MIL * wrap_k * 1.08 < w else 0
             item.width = round(wrap_mm or w + 0.2, 2)  # stała szerokość: wyrównanie wierszy działa
             item.geometry_changed()
             x, y = self.place(o, *item.size_mm())
@@ -270,7 +276,7 @@ class Importer:
         item = items.BarcodeItem()
         item.symbology, item.data = sym, data
         # za drugą kopią danych: szerokość symbolu i wysokość kresek [mils]
-        m = re.compile(rb"\xff{8}([\s\S]{4})\x00\x00([\s\S]{4})\x00\x01").search(d, vals[0][1], o["stop"])
+        m = re.compile(rb"\xff{8}([\s\S]{4})\x00\x00([\s\S]{4})\x00[\x00\x01]").search(d, vals[0][1], o["stop"])
         fonts = _fonts(d, vals[0][1], o["stop"])
         if fonts:
             fam, pt, bold, *_ = fonts[0][1]
