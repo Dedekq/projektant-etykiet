@@ -256,6 +256,13 @@ it3 = btw.read_btw(p)[0]["items"][0]
 assert make_item(it3).content() == "Nowy tekst" and (it3["width"], it3["align"]) == (30, "do prawej"), it3
 assert btw._runs(it3)[0][1] == ("Verdana", 12.0, True, False, False), btw._runs(it3)
 assert abs(it3["x"] - 12) < 0.05 and abs(it3["y"] - 7) < 0.05, (it3["x"], it3["y"])
+# szablon bez pogrubiania fragmentów: tekst z dwoma formatami -> dwa pola, drugie za pierwszym w tym samym wierszu
+mixed = TextItem("")
+mixed.html = '<p style="font-family:\'Arial\'; font-size:8pt;"><b>Wytwórca:</b> Ustronianka</p>'
+mixed.setPos(mm(5), mm(10))
+pcs = btw._pieces(mixed.to_dict())
+assert [make_item(p).content() for p in pcs] == ["Wytwórca:", "Ustronianka"], pcs
+assert abs(pcs[0]["x"] - 5) < 0.02 and pcs[1]["x"] > pcs[0]["x"] + 8 and abs(pcs[0]["y"] - pcs[1]["y"]) < 0.05
 assert btw._spread(["przez:", " Ustronianka\n"], "przez: Ustronianka i S-ka\n") == (["przez:", " Ustronianka i S-ka\n"], False)
 assert btw._spread(["A", "B", "C"], "AXC") == (["AX", "", "C"], True)
 sample_btw = os.path.join(os.path.dirname(__file__), "..", "..", "Etykiety", "V-MAX", "V-MAX Lemon.btw")

@@ -118,7 +118,7 @@ def _objects(d):
         cls = ends.get(q - 20)
         if cls:
             found.append({"cls": cls, "name": name, "x": _i32(d, q - 20), "y": _i32(d, q - 16),
-                          "anchor": m.group(1)[0], "pos": q - 20, "end": after})
+                          "anchor": m.group(1)[0], "anchor_at": m.start(1), "pos": q - 20, "end": after})
     for k, o in enumerate(found):
         o["stop"] = found[k + 1]["pos"] if k + 1 < len(found) else len(d)
     return found
@@ -468,7 +468,7 @@ def _runs(it):
                 fam = (cf.fontFamilies() or [doc.defaultFont().family()])[0]
                 pt = cf.fontPointSize() or doc.defaultFont().pointSizeF()
                 key = (fam, round(pt, 2), cf.fontWeight() >= 600, cf.fontItalic(), cf.fontUnderline())
-                text = f.text().replace(" ", "\n")
+                text = f.text().replace("\u2028", "\n")
                 if out and out[-1][1] == key:
                     out[-1] = (out[-1][0] + text, key)
                 else:
@@ -478,6 +478,60 @@ def _runs(it):
         if block.isValid() and out:
             out[-1] = (out[-1][0] + "\n", out[-1][1])
     return out or [("", ("Arial", 10.0, False, False, False))]
+
+
+def _pieces(it):
+    """Tekst wielowierszowy albo z kilkoma formatami -> osobne pola „wiersz × format” w miejscach z układu programu.
+    Szablon nie musi wtedy umieć pogrubiać fragmentów (BarTender UltraLite/Basic), a interlinia i justowanie
+    wynikają z położenia pól. Inne elementy i tekst jednowierszowy w jednym formacie zostają bez zmian."""
+    if it["kind"] != "text":
+        return [it]
+    src = items.make_item(it)
+    if len(_runs(it)) == 1 and "\n" not in src.content():
+        lay = src._exact_doc().begin().layout()
+        if lay.lineCount() <= 1:
+            return [it]
+    doc = src._exact_doc()
+    x0, y0 = it["x"], it["y"]
+    out = []
+    block = doc.begin()
+    while block.isValid():
+        lay, top = block.layout(), doc.documentLayout().blockBoundingRect(block).top()
+        frags, f = [], block.begin()
+        while not f.atEnd():
+            fr = f.fragment()
+            if fr.isValid():
+                frags.append((fr.position() - block.position(), fr.length(), fr.charFormat()))
+            f += 1
+        text = block.text()
+        justify = bool(block.blockFormat().alignment() & Qt.AlignJustify)
+        for i in range(lay.lineCount()):
+            line = lay.lineAt(i)
+            a0, a1 = line.textStart(), line.textStart() + line.textLength()
+            base = items.to_mm((top + line.y() + line.ascent()) / items.HIRES)
+            # wiersz wyjustowany (nie ostatni w akapicie): każde słowo osobno, bo odstępy są rozciągnięte
+            words = justify and i < lay.lineCount() - 1
+            parts = []
+            for start, length, cf in frags:
+                a, b = max(a0, start), min(a1, start + length)
+                if words:
+                    parts += [(a + w.start(), w.group(), cf) for w in re.finditer(r"\S+", text[a:b])]
+                elif text[a:b].strip():
+                    parts.append((a + len(text[a:b]) - len(text[a:b].lstrip()), text[a:b].strip(), cf))
+            for a, piece, cf in parts:
+                x = line.cursorToX(a)
+                x = x[0] if isinstance(x, tuple) else x
+                t = items.TextItem("")
+                cf2 = QTextCharFormat(cf)
+                cf2.setFontPointSize((cf.fontPointSize() or doc.defaultFont().pointSizeF()) / items.HIRES)
+                QTextCursor(t.document()).insertText(piece, cf2)
+                t.geometry_changed()
+                first = t._exact_doc().begin().layout().lineAt(0)
+                t.setPos(items.mm(x0 + items.to_mm(x / items.HIRES)),
+                         items.mm(y0 + base - items.to_mm((first.y() + first.ascent()) / items.HIRES)))
+                out.append(t.to_dict())
+        block = block.next()
+    return out
 
 
 class Writer:
@@ -500,7 +554,7 @@ class Writer:
         d = self.d
         free = sorted(objs.values(), key=lambda o: (o["y"], o["x"]))
         pairs = []
-        order = sorted(self.doc["items"], key=lambda it: -len(_runs(it)) if it["kind"] == "text" else 0)
+        order = sorted(self.items, key=lambda it: -len(_runs(it)) if it["kind"] == "text" else 0)
         for it in order:
             if it["kind"] == "text":
                 runs = _runs(it)
@@ -521,11 +575,11 @@ class Writer:
                 pairs.append((it, None))
                 continue
             free.remove(o)
-            w, h = items.make_item(it).size_mm()
-            col, row = o["anchor"] % 3, min(2, o["anchor"] // 3)
+            # zaczepienie pola: lewy górny róg — położenie nie zależy od tego, jak szeroko BarTender złoży tekst
+            if o["anchor"]:
+                self.edits.append((o["anchor_at"], o["anchor_at"] + 1, b"\x00"))
             lead = items.to_mm(items.make_item(it)._lead()) if it["kind"] == "barcode" else 0
-            ref = {"pos": o["pos"], "name": o["name"], "full": True,
-                   "dx": -(lead + col * (w - lead) / 2), "dy": -row * h / 2}
+            ref = {"pos": o["pos"], "name": o["name"], "full": True, "dx": -lead, "dy": 0.0}
             pairs.append((it, ref))
         for o in free:  # niewykorzystane pola szablonu: puste, żeby nie drukowały wzorcowej treści
             if o["cls"] == "TextData":
@@ -581,7 +635,7 @@ class Writer:
         d = self.d
         vals = _values(d, o["end"], o["stop"])
         parts = _shown(vals, _fixed_box(d, o, vals)[0]) if vals else []
-        new = items.make_item(it).content().replace(" ", "\n")
+        new = items.make_item(it).content().replace("\u2028", "\n")
         if not vals or new == "".join(parts):
             return
         if re.search(r"\{[^}]+\}", new):
@@ -678,13 +732,10 @@ class Writer:
 
     def run(self):
         objs = {o["pos"]: o for o in _objects(self.d) if _design(o["cls"])}
+        header = self.raw[:self.start]
         if self.auto:
-            m = re.search(rb"<TemplateSize>\s*([\d.,]+)\s*x\s*([\d.,]+)\s*mm", self.raw)
-            size = tuple(float(v.replace(b",", b".")) for v in m.groups()) if m else None
-            lab = (self.doc["label"]["w"], self.doc["label"]["h"])
-            if size and max(abs(a - b) for a, b in zip(size, lab)) > 0.1:
-                self.note(f"Szablon ma rozmiar {size[0]:g} × {size[1]:g} mm, etykieta {lab[0]:g} × {lab[1]:g} mm — "
-                          "w pliku zostaje rozmiar szablonu.")
+            header = self.resize(header)
+            self.items = [p for it in self.doc["items"] for p in _pieces(it)]
             pairs = self.auto_map(objs)
         else:
             pairs = [(it, it.get("btw") or {}) for it in self.doc["items"]]
@@ -717,7 +768,34 @@ class Writer:
         for a, b, new in sorted(self.edits, key=lambda e: e[0], reverse=True):
             d = d[:a] + new + d[b:]
         level = {0x01: 1, 0x5e: 3, 0x9c: 6, 0xda: 9}[self.raw[self.start + 1]]
-        return self.preview(self.raw[:self.start]) + zlib.compress(d, level)
+        return self.preview(header) + zlib.compress(d, level)
+
+    def resize(self, header):
+        """Rozmiar etykiety z programu, gdy szablon ma inny: pary szerokość/wysokość [mils] w strumieniu,
+        znacznik orientacji za pierwszą parą (archiwum 2022: 1 poziomo, 0 pionowo) i TemplateSize w nagłówku."""
+        m = re.search(rb"<TemplateSize>\s*([\d.,]+)\s*x\s*([\d.,]+)\s*mm", header)
+        lab = (self.doc["label"]["w"], self.doc["label"]["h"])
+        size = tuple(float(v.replace(b",", b".")) for v in m.groups()) if m else None
+        if not size or max(abs(a - b) for a, b in zip(size, lab)) <= 0.1:
+            return header
+        old, new = (round(v / MIL) for v in size), (round(v / MIL) for v in lab)
+        old, new = struct.pack("<ii", *old), tuple(new)
+        hits = [h.start() for h in re.finditer(re.escape(old), self.d)]
+        if not hits:
+            self.note(f"Nie znaleziono rozmiaru szablonu w pliku — zostaje {size[0]:g} × {size[1]:g} mm.")
+            return header
+        for k, h in enumerate(hits):
+            self.edits.append((h, h + 8, struct.pack("<ii", *new)))
+            nxt = h + 8
+            if k == 0 and self.d[nxt + 4:nxt + 20] == bytes(16) and self.d[nxt + 20:nxt + 28] == old:
+                self.edits.append((nxt, nxt + 4, struct.pack("<i", 1 if new[0] > new[1] else 0)))
+        text = f"{lab[0]:g} x {lab[1]:g} mm".replace(".", ",").encode()
+        if len(text) == m.end() - m.start(1):
+            header = header[:m.start(1)] + text + header[m.end():]
+        else:
+            self.note("Rozmiar w opisie pliku (TemplateSize) został stary — BarTender pokaże go do pierwszego zapisu.")
+        self.note(f"Rozmiar szablonu {size[0]:g} × {size[1]:g} mm zmieniony na {lab[0]:g} × {lab[1]:g} mm.")
+        return header
 
 
 def write_btw(doc, path, template=None):
