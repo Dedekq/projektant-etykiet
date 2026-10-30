@@ -644,24 +644,38 @@ class MainWindow(QMainWindow):
 
     def save_btw(self):
         doc = self.doc()
+        template = None
         if not doc.get("btw_template"):
-            QMessageBox.information(self, APP, "Zapis dla BarTendera działa dla etykiet otwartych z pliku .btw — "
-                                    "ten plik jest wzorem, w którym program podmienia treści, kody i położenie.\n\n"
-                                    "Otwórz podobną etykietę .btw (Plik → Otwórz), zmień dane i zapisz ponownie.")
-            return
+            if QMessageBox.question(
+                    self, APP, "Ta etykieta nie pochodzi z BarTendera. Program zapisze ją w szablonie .btw: pustej "
+                    "etykiecie BarTendera tego samego rozmiaru, z co najmniej tyloma polami tekstowymi i kodami.\n\n"
+                    "Tekst z pogrubionymi fragmentami potrzebuje w szablonie pola z tyloma fragmentami "
+                    "(np. „a b c” z pogrubionym „b”).\n\nWybrać szablon?") != QMessageBox.Yes:
+                return
+            tpath, _ = QFileDialog.getOpenFileName(self, "Szablon BarTendera", "", "BarTender (*.btw)")
+            if not tpath:
+                return
+            try:
+                with open(tpath, "rb") as fh:
+                    template = fh.read()
+            except OSError as ex:
+                QMessageBox.critical(self, APP, f"Nie można otworzyć szablonu:\n{ex}")
+                return
         base = os.path.splitext(self.path or self.save_hint or self.scene.label.get("name", "etykieta"))[0]
         hint = base + ".btw" if not os.path.exists(base + ".btw") else base + " (nowy).btw"
         path, _ = QFileDialog.getSaveFileName(self, "Zapisz dla BarTendera", hint, "BarTender (*.btw)")
         if not path:
             return
         try:
-            notes = btw.write_btw(doc, path)
+            notes = btw.write_btw(doc, path, template)
         except Exception as ex:  # nieznany wariant wzoru nie może zamknąć programu
             QMessageBox.critical(self, APP, f"Nie zapisano pliku BarTendera:\n{ex}")
             return
-        QMessageBox.information(self, APP, f"Zapisano {os.path.basename(path)}.\n\nDo BarTendera trafiają treści "
-                                "tekstów, dane kodów, kod QR i położenie elementów; czcionki i rozmiary zostają "
-                                "ze wzoru. Przed drukiem otwórz plik w BarTenderze i sprawdź."
+        what = ("treści, czcionki, wielkości, zawijanie i wyrównanie tekstów, kody i położenie elementów"
+                if template else "treści tekstów, dane kodów, kod QR i położenie elementów; czcionki i rozmiary "
+                "zostają ze wzoru")
+        QMessageBox.information(self, APP, f"Zapisano {os.path.basename(path)}.\n\nDo BarTendera trafiają {what}. "
+                                "Przed drukiem otwórz plik w BarTenderze i sprawdź."
                                 + ("\n\nUwagi:\n• " + "\n• ".join(notes) if notes else ""))
 
     def closeEvent(self, e):

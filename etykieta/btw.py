@@ -236,7 +236,7 @@ class Importer:
                 if k:
                     cur.insertBlock()
                 cur.insertText(line, f)
-        item.align = {1: "do środka", 2: "do prawej"}.get(align, "do lewej")
+        item.align = {1: "do środka", 2: "do prawej", 3: "wyjustuj"}.get(align, "do lewej")
         item.width = 0.0
         item.geometry_changed()
         if fixed:
@@ -252,9 +252,11 @@ class Importer:
             # shortcut: Arial w miejsce czcionki drukarki (TSC Sans Serif) jest ~12% szerszy — poszerzamy zawijanie,
             # żeby wiersze łamały się jak w BarTenderze; dokładnie byłoby z metrykami czcionki drukarki
             wrap_k = 1.12 if replaced else 1.0
-            # zawijanie tylko gdy wiersz naprawdę się nie mieści
-            wrap_mm = wrap_w * MIL * wrap_k if wrap and 0 < wrap_w * MIL * wrap_k * 1.08 < w else 0
-            item.width = round(wrap_mm or w + 0.2, 2)  # stała szerokość: wyrównanie wierszy działa
+            if wrap and wrap_w > 0:  # pole ma szerokość z BarTendera; zawijamy tylko gdy wiersz naprawdę się nie mieści
+                box = wrap_w * MIL * wrap_k
+                item.width = round(box if w > box * 1.08 else max(box, w + 0.2), 2)
+            else:
+                item.width = round(w + 0.2, 2)  # stała szerokość: wyrównanie wierszy działa
             item.geometry_changed()
             x, y = self.place(o, *item.size_mm())
         item.setPos(items.mm(x), items.mm(y))
@@ -450,16 +452,130 @@ def _svg_qr(data, ecc):
             'fill-rule="nonzero" stroke="none"/></svg>').encode()
 
 
+def _runs(it):
+    """Fragmenty tekstu elementu: [(tekst z \\n, (rodzina, pt, pogrubienie, kursywa, podkreślenie))], sąsiednie
+    o tym samym formacie połączone (BarTender trzyma każdy fragment jako osobne źródło danych)."""
+    item = items.make_item(it)  # element musi żyć, dopóki czytamy jego dokument
+    doc = item.document()
+    out = []
+    block = doc.begin()
+    while block.isValid():
+        frags = block.begin()
+        while not frags.atEnd():
+            f = frags.fragment()
+            if f.isValid():
+                cf = f.charFormat()
+                fam = (cf.fontFamilies() or [doc.defaultFont().family()])[0]
+                pt = cf.fontPointSize() or doc.defaultFont().pointSizeF()
+                key = (fam, round(pt, 2), cf.fontWeight() >= 600, cf.fontItalic(), cf.fontUnderline())
+                text = f.text().replace(" ", "\n")
+                if out and out[-1][1] == key:
+                    out[-1] = (out[-1][0] + text, key)
+                else:
+                    out.append((text, key))
+            frags += 1
+        block = block.next()
+        if block.isValid() and out:
+            out[-1] = (out[-1][0] + "\n", out[-1][1])
+    return out or [("", ("Arial", 10.0, False, False, False))]
+
+
 class Writer:
-    def __init__(self, doc):
+    def __init__(self, doc, template=None):
+        """template: bajty pliku .btw jako szablon dla etykiety spoza BarTendera (bez doc["btw_template"])."""
         self.doc = doc
-        self.raw = base64.b64decode(doc["btw_template"])
+        self.auto = template is not None
+        self.raw = template if self.auto else base64.b64decode(doc["btw_template"])
         self.start, self.d = _stream(self.raw)
         self.edits, self.notes = [], []  # edycje: (od, do, nowe bajty) w strumieniu dokumentu
 
     def note(self, s):
         if s not in self.notes:
             self.notes.append(s)
+
+    # ---------------------------------------------------------- szablon: przypisanie elementów do obiektów
+    def auto_map(self, objs):
+        """Elementy etykiety -> obiekty szablonu tego samego rodzaju. Tekst idzie do pola z co najmniej tyloma
+        fragmentami (źródłami danych), ile ma formatów — najlepiej z identycznym układem pogrubień."""
+        d = self.d
+        free = sorted(objs.values(), key=lambda o: (o["y"], o["x"]))
+        pairs = []
+        order = sorted(self.doc["items"], key=lambda it: -len(_runs(it)) if it["kind"] == "text" else 0)
+        for it in order:
+            if it["kind"] == "text":
+                runs = _runs(it)
+                cands = []
+                for o in free:
+                    if o["cls"] != "TextData":
+                        continue
+                    vals = _values(d, o["end"], o["stop"])
+                    if len(vals) >= len(runs):
+                        # fragmenty bez własnej czcionki dzielą wspólną czcionkę pola: muszą mieć ten sam format
+                        shared = {r[1] for v, r in zip(vals, runs) if v[2] is None and r[0].strip()}
+                        cands.append((len(shared) > 1, len(vals) - len(runs), o["y"], o["x"], o))
+                o = min(cands, key=lambda c: c[:4])[4] if cands else None
+            else:
+                want = {"barcode": lambda c: c.startswith("Bc"), "code2d": lambda c: c == "PictureData"}.get(it["kind"])
+                o = next((o for o in free if want and want(o["cls"])), None)
+            if o is None:
+                pairs.append((it, None))
+                continue
+            free.remove(o)
+            w, h = items.make_item(it).size_mm()
+            col, row = o["anchor"] % 3, min(2, o["anchor"] // 3)
+            lead = items.to_mm(items.make_item(it)._lead()) if it["kind"] == "barcode" else 0
+            ref = {"pos": o["pos"], "name": o["name"], "full": True,
+                   "dx": -(lead + col * (w - lead) / 2), "dy": -row * h / 2}
+            pairs.append((it, ref))
+        for o in free:  # niewykorzystane pola szablonu: puste, żeby nie drukowały wzorcowej treści
+            if o["cls"] == "TextData":
+                for v in _values(d, o["end"], o["stop"]):
+                    self.edits.append((v[3], v[1], _cs("")))
+                self.note(f"Pole szablonu „{o['name']}” niewykorzystane — wyczyszczone.")
+            else:
+                self.note(f"Obiekt szablonu „{o['name']}” niewykorzystany — zostaje w pliku.")
+        return pairs
+
+    def font(self, s, fmt):
+        """Podmiana LOGFONT od s (i wielkości jako float zaraz za nim, w archiwum 2022)."""
+        fam, pt, bold, italic, under = fmt
+        self.edits += [(s, s + 4, struct.pack("<i", -round(pt * 20))),
+                       (s + 16, s + 22, struct.pack("<i", 700 if bold else 400) + bytes([italic, under])),
+                       (s + 28, s + 92, fam.encode("utf-16-le")[:62].ljust(64, b"\0"))]
+        if struct.unpack_from("<f", self.d, s + 92)[0] > 0:
+            self.edits.append((s + 92, s + 96, struct.pack("<f", pt)))
+
+    def text_full(self, o, it, label):
+        """Tekst z formatowaniem: fragmenty -> źródła danych, ich czcionki, zawijanie i wyrównanie."""
+        d = self.d
+        vals = _values(d, o["end"], o["stop"])
+        runs = _runs(it)
+        runs += [("", runs[-1][1])] * (len(vals) - len(runs))
+        fonts = _fonts(d, o["end"], o["stop"])
+        default = {}  # format dla wartości bez własnej czcionki (wspólna czcionka obiektu)
+        for v, (text, fmt) in zip(vals, runs):
+            self.edits.append((v[3], v[1], _cs(text.replace("\n", "\r"))))
+            if v[2]:
+                self.font(v[1] + 13, fmt)
+            elif text:
+                default.setdefault(fmt, text)
+        if len(default) > 1:
+            self.note(f"{label}: w szablonie za mało fragmentów z własną czcionką — część tekstu dostała "
+                      "wspólną czcionkę pola.")
+        if default and fonts:
+            fmt = next(iter(default))
+            own = {v[1] + 13 for v in vals if v[2]}
+            for s, _f in fonts:  # wspólna czcionka (i jej kopia dla czcionek drukarki)
+                if s not in own:
+                    self.font(s, fmt)
+        p = _PARA.search(d, vals[-1][1], o["stop"])
+        if p:
+            align = {"do środka": 1, "do prawej": 2, "wyjustuj": 3}.get(it.get("align"), 0)
+            w = it.get("width") or 0
+            self.edits += [(p.start() + 8, p.start() + 16, struct.pack("<ii", 1 if w > 0 else 0, align)),
+                           (p.start() + 20, p.start() + 24, struct.pack("<i", round(w / MIL) if w > 0 else 2000))]
+        if it.get("line_height", 100) != 100:
+            self.note(f"{label}: interlinii ({it['line_height']}%) BarTender nie dostaje — zostaje ze szablonu.")
 
     def text(self, o, it, label):
         d = self.d
@@ -478,11 +594,20 @@ class Writer:
                 tail = v[0][len(was):]  # końcowe \r, które BarTender pomija w polu
                 self.edits.append((v[3], v[1], _cs(now.replace("\n", "\r") + tail)))
 
-    def barcode(self, o, it, label):
+    def barcode(self, o, it, label, full=False):
         d = self.d
         vals = _values(d, o["end"], o["stop"])
         if not vals:
             return
+        if full:  # etykieta spoza BarTendera: szerokość symbolu, wysokość kresek i czcionka cyfr jak w programie
+            m = re.compile(rb"\xff{8}([\s\S]{4})\x00\x00([\s\S]{4})\x00[\x00\x01]").search(d, vals[0][1], o["stop"])
+            b = items.make_item(it)
+            if m and b._pattern:
+                self.edits += [(m.start() + 8, m.start() + 12, struct.pack("<i", round(b.module * len(b._pattern) / MIL))),
+                               (m.start() + 14, m.start() + 18, struct.pack("<i", round(b.bar_height / MIL)))]
+            fonts = _fonts(d, vals[0][1], o["stop"])
+            if fonts:
+                self.font(fonts[0][0], ("Arial", b.font_size, b.text_bold, False, False))
         if it["symbology"] != BARCODES.get(o["cls"]):
             self.note(f"{label}: zmiany rodzaju kodu BarTender nie dostanie — zostaje {BARCODES.get(o['cls'], o['cls'])}.")
             return
@@ -553,14 +678,25 @@ class Writer:
 
     def run(self):
         objs = {o["pos"]: o for o in _objects(self.d) if _design(o["cls"])}
+        if self.auto:
+            m = re.search(rb"<TemplateSize>\s*([\d.,]+)\s*x\s*([\d.,]+)\s*mm", self.raw)
+            size = tuple(float(v.replace(b",", b".")) for v in m.groups()) if m else None
+            lab = (self.doc["label"]["w"], self.doc["label"]["h"])
+            if size and max(abs(a - b) for a, b in zip(size, lab)) > 0.1:
+                self.note(f"Szablon ma rozmiar {size[0]:g} × {size[1]:g} mm, etykieta {lab[0]:g} × {lab[1]:g} mm — "
+                          "w pliku zostaje rozmiar szablonu.")
+            pairs = self.auto_map(objs)
+        else:
+            pairs = [(it, it.get("btw") or {}) for it in self.doc["items"]]
         used = set()
-        for it in self.doc["items"]:
-            ref = it.get("btw") or {}
+        for it, ref in pairs:
+            ref = ref or {}
             o = objs.get(ref.get("pos"))
             content = items.make_item(it).content().replace("\n", " ")
             label = f"„{content[:30]}”" if content else it["kind"]
             if not o or o["name"] != ref.get("name") or o["pos"] in used:
-                self.note(f"{label}: dodany w programie — w pliku BarTendera go nie będzie.")
+                self.note(f"{label}: " + ("brak pasującego pola w szablonie — nie trafi do BarTendera." if self.auto
+                                          else "dodany w programie — w pliku BarTendera go nie będzie."))
                 continue
             used.add(o["pos"])
             x, y = it["x"] - ref["dx"], it["y"] - ref["dy"]
@@ -569,13 +705,13 @@ class Writer:
             if it.get("rotation"):
                 self.note(f"{label}: obrót nie jest zapisywany do BarTendera.")
             if it["kind"] == "text" and o["cls"] == "TextData":
-                self.text(o, it, label)
+                (self.text_full if ref.get("full") else self.text)(o, it, label)
             elif it["kind"] == "barcode" and o["cls"].startswith("Bc"):
-                self.barcode(o, it, label)
+                self.barcode(o, it, label, full=ref.get("full", False))
             elif it["kind"] == "code2d" and o["cls"] == "PictureData":
                 self.qr(o, it, ref, label)
         for o in objs.values():
-            if o["pos"] not in used:
+            if o["pos"] not in used and not self.auto:  # w szablonie wolne pola opisuje auto_map
                 self.note(f"„{o['name']}”: usunięty w programie — w pliku BarTendera zostaje.")
         d = self.d
         for a, b, new in sorted(self.edits, key=lambda e: e[0], reverse=True):
@@ -584,11 +720,12 @@ class Writer:
         return self.preview(self.raw[:self.start]) + zlib.compress(d, level)
 
 
-def write_btw(doc, path):
-    """Zapis .btw: wzór z doc["btw_template"] z treściami, kodami i pozycjami elementów -> lista uwag."""
-    if not doc.get("btw_template"):
-        raise ValueError("Ta etykieta nie pochodzi z pliku BarTendera — brak wzoru .btw.")
-    w = Writer(doc)
+def write_btw(doc, path, template=None):
+    """Zapis .btw -> lista uwag. Wzór: doc["btw_template"] (etykieta z BarTendera: treści, kody, położenie)
+    albo template = bajty szablonu .btw (etykieta z programu: także czcionki, zawijanie, wyrównanie)."""
+    if template is None and not doc.get("btw_template"):
+        raise ValueError("Ta etykieta nie pochodzi z pliku BarTendera — wybierz szablon .btw.")
+    w = Writer(doc, template)
     data = w.run()
     _stream(data)  # kontrola: plik da się odczytać
     tmp = path + ".tmp"
