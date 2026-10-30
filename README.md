@@ -35,6 +35,10 @@ A Windows desktop app for designing and printing product labels, in the spirit o
   - The program writes text content, barcode data, the QR code (new SVG plus its CRC32) and element positions into a copy of the template, and regenerates the preview thumbnail.
   - Fonts and sizes stay as in the template. Elements added in the program are not transferred, and elements deleted in the program stay in the `.btw`. A summary lists both after saving.
   - Verified in BarTender 2022: the edited file opens with the new data.
+  - **Labels made in the program** go into a *template* `.btw`: an empty BarTender label with one EAN-13 and enough text fields (e.g. 80 copies of “a”, no formatting needed).
+    - The program writes text, font, size, bold/italic, position and barcode size, and changes the label size if the template differs.
+    - Text with several formats or several lines is split into one field per line and format. Justified lines are split word by word, so bold words inside a justified paragraph work even in BarTender editions that cannot bold part of a text.
+    - Unused template fields are cleared. Verified in BarTender 2016 R4 Basic.
 
 ### Build
 ```bash
@@ -84,6 +88,10 @@ Plik → „Zapisz dla BarTendera (.btw)…” tworzy nowy plik .btw z etykiety 
 - Do kopii wzoru trafiają: treści tekstów, dane kodów kreskowych, kod QR (nowy obraz SVG z sumą CRC32) i położenie elementów. Miniatura podglądu jest generowana od nowa.
 - Czcionki i rozmiary zostają takie jak we wzorze. Elementy dodane w programie nie trafiają do .btw, a usunięte w programie zostają w .btw. Po zapisie program wypisuje jedne i drugie.
 - Sprawdzone w BarTenderze 2022: zmieniony plik otwiera się z nowymi danymi.
+- **Etykiety zrobione w programie** trafiają do *szablonu* `.btw`. Szablon to pusta etykieta BarTendera z jednym kodem EAN-13 i odpowiednią liczbą pól tekstowych (np. 80 kopii pola „a”, bez formatowania).
+  - Program zapisuje treść, czcionkę, wielkość, pogrubienie i kursywę, położenie oraz wymiary kodu. Jeśli szablon ma inny rozmiar, program go zmienia.
+  - Tekst z kilkoma formatami albo z kilkoma wierszami jest rozbijany na pola „wiersz × format”. Wiersze wyjustowane są rozbijane słowo po słowie. Dzięki temu pogrubione słowa w wyjustowanym akapicie działają także w edycjach BarTendera, które nie pogrubiają fragmentów tekstu.
+  - Niewykorzystane pola szablonu są czyszczone. Sprawdzone w BarTenderze 2016 R4 Basic.
 
 ### Druk (przycisk „Rozmiar i drukarka”, Ctrl+L)
 - **TSC / TSPL** (główna drukarka: TSC MH341, 300 dpi):
