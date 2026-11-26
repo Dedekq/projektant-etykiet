@@ -194,6 +194,29 @@ ALIGN = {"do lewej": Qt.AlignLeft, "do środka": Qt.AlignHCenter, "do prawej": Q
 HIRES = 8
 
 
+# litery bez znaków diakrytycznych i bez wydłużeń w dół — ich wysokość to wysokość wersalika / litery „x”
+FLAT_UPPER = set("ABCDEFGHIKLMNOPRSTUVWXYZАБВГЕЖЗИКЛМНОПРСТУФХЧШЫЬЭЮЯІ")
+FLAT_LOWER = set("acemnorsuvwxzавгежзиклмнопстхчшыьэюя")
+
+
+def pick_letter(text, upper):
+    """Przykładowa litera z tekstu do pomiaru: najpierw „płaska” (bez ogonków i kresek), inaczej dowolna."""
+    flat = FLAT_UPPER if upper else FLAT_LOWER
+    same_case = [c for c in text if c.isalpha() and (c.isupper() if upper else c.islower())]
+    return next((c for c in same_case if c in flat), same_case[0] if same_case else "")
+
+
+def letter_height_mm(font, ch):
+    """Wysokość rysunku litery w mm (×10 przy pomiarze: metryki Qt są w całych pikselach ekranu)."""
+    big = QFont(font)
+    big.setPointSizeF(font.pointSizeF() * 10)
+    return to_mm(QFontMetricsF(big).tightBoundingRect(ch).height()) / 10
+
+
+def mm_cm(v):
+    return f"{v:.2f} mm ({v / 10:.3f} cm)".replace(".", ",")
+
+
 def scale_doc_fonts(doc, factor, exact):
     """Mnoży rozmiar czcionki każdego fragmentu (exact=False: co 0,5 pt, min. 2 pt)."""
     default_pt = doc.defaultFont().pointSizeF()
@@ -375,8 +398,8 @@ class TextItem(LabelItemMixin, QGraphicsTextItem):
     def content(self):
         return self.toPlainText()
 
-    def font_runs(self):
-        """Unikalne formaty w tekście: (rodzina, pt, pogrubienie, kursywa, podkreślenie, przykład)."""
+    def _run_texts(self):
+        """Cały tekst w każdym formacie: {(rodzina, pt, pogrubienie, kursywa, podkreślenie): tekst}."""
         runs = {}
         block = self.document().begin()
         while block.isValid():
@@ -386,22 +409,34 @@ class TextItem(LabelItemMixin, QGraphicsTextItem):
                 if frag.isValid() and frag.text().strip():
                     f = frag.charFormat().font()
                     key = (f.family(), round(f.pointSizeF(), 1), f.bold(), f.italic(), f.underline())
-                    runs.setdefault(key, frag.text().strip()[:25])
+                    runs[key] = runs.get(key, "") + frag.text() + " "
                 it += 1
             block = block.next()
-        return [k + (v,) for k, v in runs.items()]
+        return runs
+
+    def font_runs(self):
+        """Unikalne formaty w tekście: (rodzina, pt, pogrubienie, kursywa, podkreślenie, przykład)."""
+        return [k + (v.strip()[:25],) for k, v in self._run_texts().items()]
 
     def doc_details(self):
         out = []
-        for fam, pt, b, i, u, sample in self.font_runs():
+        for (fam, pt, b, i, u), text in self._run_texts().items():
             f = QFont(fam)
             f.setPointSizeF(pt)
             f.setBold(b)
-            fm = QFontMetricsF(f)  # metryki w px 96 DPI = jednostki sceny
-            cap, xh = to_mm(fm.capHeight()), to_mm(fm.xHeight())
+            f.setItalic(i)
+            big = QFont(f)
+            big.setPointSizeF(pt * 10)  # metryki Qt są w całych px ekranu: przy małych czcionkach ×10, potem /10
+            fm = QFontMetricsF(big)  # px 96 DPI = jednostki sceny
+            cap, xh = to_mm(fm.capHeight()) / 10, to_mm(fm.xHeight()) / 10
             style = "".join(s for s, on in (("B", b), ("I", i), ("U", u)) if on)
-            out.append(f"{fam} {pt:g} pt{(' ' + style) if style else ''} "
-                       f"(wersalik {cap:.2f} mm, x {xh:.2f} mm) — „{sample}”")
+            nums = f"{pt:g} pt{(' ' + style) if style else ''} (wersalik {cap:.2f} mm, x {xh:.2f} mm)"
+            out.append(f"{fam} {nums.replace('.', ',')} — „{text.strip()[:25]}”")
+            letters = [f"{name} „{ch}” {mm_cm(letter_height_mm(f, ch))}"
+                       for name, ch in (("duża", pick_letter(text, upper=True)), ("mała", pick_letter(text, upper=False)))
+                       if ch]
+            if letters:
+                out.append("   " + ", ".join(letters))
         return "\n".join(out)
 
 
