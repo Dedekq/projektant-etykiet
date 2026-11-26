@@ -10,6 +10,7 @@ i pozycje (sprawdzone: BarTender otwiera tak zmieniony plik). Elementy dodane w 
 import base64
 import copy
 import itertools
+import math
 import os
 import re
 import struct
@@ -31,13 +32,20 @@ IGNORED = {"BackgroundRFIDData", "BackgroundData", "DialogData", "ScreenDs", "Sc
 
 _TOK = re.compile(rb"\xff\xff[\x00-\x20]\x00([\x02-\x40])\x00|([\x01-\x7f])\x80")
 # bajt \x01 po pierwszym pustym CString jest w archiwum 2022 (113002), nie ma go w zgodnym z BT 10.1 (88634)
-_HDR = re.compile(rb"\xff\xfe\xff\x00\x01?\xff\xfe\xff\x00\x00\x00\x00\x00\xff\xfe\xff\x00\x00\x01([\s\S])\x00{21}\xff\xfe\xff")
+# za zaczepieniem 21 bajtów: zwykle zera, ale bywa obrót (int32 od 3. bajtu, w tysięcznych stopnia) i przesunięcia
+_HDR = re.compile(rb"\xff\xfe\xff\x00\x01?\xff\xfe\xff\x00\x00\x00\x00\x00\xff\xfe\xff\x00\x00\x01([\s\S])([\s\S]{21})"
+                  rb"\xff\xfe\xff")
 # shortcut: wartość źródła danych rozpoznajemy po domyślnej masce „(???) ???-????” przed nią — działa na
 # wszystkich znanych plikach; inna maska (zmieniona w BarTenderze) = brak treści i ostrzeżenie
 _VAL = re.compile(re.escape("(???) ???-????".encode("utf-16-le")) + rb"\xff\xfe\xff\x00\xff\xff\xff\xff\xff\xfe\xff")
 _FACE = re.compile(rb"[A-Z]\x00(?:[A-Za-z0-9 \-]\x00){1,30}\x00\x00")
 # blok liczb (float) za rozmiarem pola tekstu; pierwsza bywa różna (10,0 / 100,0)
 _SIZE = re.compile(rb"(?<=\x01\x00\x00\x00\x01\x00\x00\x00)[\s\S]{4}\x00\x00\x7a\x44\x00\x00\xa0\x42")
+# ustawienia obrazu: trzy CString (rozszerzenie bywa puste), stałe liczby, potem szerokość i wysokość [mils]
+_PIC_SIZE = re.compile(rb"\xff\xfe\xff\x00\xff\xfe\xff\x00\xff\xfe\xff\x00[\x00-\x03]\x00{3}\x01\x00{3}\x00{4}"
+                       rb"\x01\x00{3}\x01\x00{3}([\s\S]{4})([\s\S]{4})")
+# za drugą kopią danych kodu: szerokość symbolu i wysokość kresek [mils] (w kodzie QR: wysokość = bok symbolu)
+_BC_SIZE = re.compile(rb"\xff{8}([\s\S]{4})\x00\x00([\s\S]{4})\x00[\x00\x01]")
 # format akapitu za wartością: FF×8, zawijanie (0/1), wyrównanie (0 lewo, 1 środek, 2 prawo), ?, szerokość zawijania
 _PARA = re.compile(rb"\xff{8}([\x00\x01])\x00\x00\x00([\x00-\x03])\x00\x00\x00[\s\S]{4}([\s\S]{4})")
 
@@ -54,6 +62,11 @@ def _cstr(d, i):
 
 def _i32(d, i):
     return struct.unpack_from("<i", d, i)[0]
+
+
+def _qt_rotation(o):
+    """Obrót obiektu BarTendera w programie (oba zgodnie z ruchem wskazówek zegara)."""
+    return o.get("rotation", 0) % 360
 
 
 def _cs(text):
@@ -118,7 +131,8 @@ def _objects(d):
         cls = ends.get(q - 20)
         if cls:
             found.append({"cls": cls, "name": name, "x": _i32(d, q - 20), "y": _i32(d, q - 16),
-                          "anchor": m.group(1)[0], "anchor_at": m.start(1), "pos": q - 20, "end": after})
+                          "anchor": m.group(1)[0], "anchor_at": m.start(1), "pos": q - 20, "end": after,
+                          "rotation": _i32(m.group(2), 3) / 1000})
     for k, o in enumerate(found):
         o["stop"] = found[k + 1]["pos"] if k + 1 < len(found) else len(d)
     return found
@@ -203,9 +217,17 @@ class Importer:
 
     @staticmethod
     def place(o, w, h):
-        """Lewy górny róg [mm] z punktu zaczepienia BarTendera i rozmiaru obiektu [mm]."""
-        col, row = o["anchor"] % 3, min(2, o["anchor"] // 3)
-        return o["x"] * MIL - col * w / 2, o["y"] * MIL - row * h / 2
+        """Lewy górny róg [mm] nieobróconego elementu z punktu zaczepienia BarTendera i rozmiaru obiektu [mm]."""
+        rot = _qt_rotation(o)
+        if not rot:
+            col, row = o["anchor"] % 3, min(2, o["anchor"] // 3)
+            return o["x"] * MIL - col * w / 2, o["y"] * MIL - row * h / 2
+        # shortcut: obiekt obrócony — x, y to lewy górny róg obrysu na etykiecie (sprawdzone na jednym pliku:
+        # obraz 270°, zaczepienie lewy dół); program obraca wokół środka, więc element ustawiamy środkiem w obrysie
+        a = math.radians(rot)
+        pw = abs(w * math.cos(a)) + abs(h * math.sin(a))
+        ph = abs(w * math.sin(a)) + abs(h * math.cos(a))
+        return o["x"] * MIL + (pw - w) / 2, o["y"] * MIL + (ph - h) / 2
 
     # ------------------------------------------------------------ tekst
     def text(self, o):
@@ -263,8 +285,32 @@ class Importer:
         return item.to_dict()
 
     # ------------------------------------------------------------ kod kreskowy
+    def qr(self, o):
+        """Kod QR BarTendera (nie obraz): dane jak w kodzie kreskowym, za drugą kopią danych rozmiar symbolu."""
+        d = self.d
+        vals = _values(d, o["end"], o["stop"])
+        m = _BC_SIZE.search(d, vals[0][1], o["stop"]) if vals else None
+        if not m:
+            self.warn(f"„{o['name']}”: nie odczytano kodu QR — pominięto.")
+            return None
+        item = items.Code2DItem()
+        # shortcut: poziomu korekcji błędów nie odczytujemy (M) — rozmiar symbolu jest zachowany przez moduł
+        item.data, item.ecc = vals[0][0], "M"
+        item.geometry_changed()
+        if item._error:
+            self.warn(f"„{o['name']}”: nieprawidłowe dane kodu QR ({item._error}).")
+            return None
+        side = _i32(m.group(2), 0) * MIL
+        item.module = round(side / len(item._m), 3)
+        item.geometry_changed()
+        x, y = self.place(o, side, side)
+        item.setPos(items.mm(x), items.mm(y))
+        return item.to_dict()
+
     def barcode(self, o):
         d = self.d
+        if o["cls"] == "BcQrcodeData":
+            return self.qr(o)
         sym = BARCODES.get(o["cls"])
         vals = _values(d, o["end"], o["stop"])
         if not sym or not vals:
@@ -278,7 +324,7 @@ class Importer:
         item = items.BarcodeItem()
         item.symbology, item.data = sym, data
         # za drugą kopią danych: szerokość symbolu i wysokość kresek [mils]
-        m = re.compile(rb"\xff{8}([\s\S]{4})\x00\x00([\s\S]{4})\x00[\x00\x01]").search(d, vals[0][1], o["stop"])
+        m = _BC_SIZE.search(d, vals[0][1], o["stop"])
         fonts = _fonts(d, vals[0][1], o["stop"])
         if fonts:
             fam, pt, bold, *_ = fonts[0][1]
@@ -301,17 +347,17 @@ class Importer:
     # ------------------------------------------------------------ obraz
     def picture(self, o):
         d = self.d
-        m = re.compile(rb"\xff\xfe\xff\x03((?:[a-zA-Z]\x00){3})").search(d, o["end"], o["stop"])
-        data = None
-        if m:
-            e = m.end()
-            w, h = _i32(d, e + 32) * MIL, _i32(d, e + 36) * MIL
-            ext = m.group(1).decode("utf-16-le").lower()
-            for k in re.finditer(rb"\xff\xfe\xff\x03" + re.escape(m.group(1)) + rb"([\s\S]{4})", d[e:o["stop"]]):
-                n = _i32(k.group(1), 0)
-                blob = d[e + k.end():e + k.end() + n]
-                if 0 < n == len(blob):
-                    data = blob
+        size = _PIC_SIZE.search(d, o["end"], o["stop"])
+        w, h = (_i32(size.group(1), 0) * MIL, _i32(size.group(2), 0) * MIL) if size else (0, 0)
+        if _qt_rotation(o) % 180 == 90:
+            w, h = h, w  # rozmiar zapisany po obrocie (tak jak na etykiecie)
+        data = ext = None
+        # dane: CString z rozszerzeniem (svg, BMP, png…), długość, bajty; ten sam CString w ustawieniach nie ma długości
+        for m in re.finditer(rb"\xff\xfe\xff\x03((?:[A-Za-z]\x00){3})([\s\S]{4})", d[o["end"]:o["stop"]]):
+            a, n = o["end"] + m.end(), _i32(m.group(2), 0)
+            if 16 < n <= o["stop"] - a:
+                data, ext = d[a:a + n], m.group(1).decode("utf-16-le").lower()
+                break
         if not data or w <= 0 or h <= 0:
             self.warn(f"„{o['name']}”: nie odczytano obrazu — pominięto.")
             return None
@@ -387,6 +433,7 @@ class Importer:
                 self.warn(f"„{o['name']}” ({c}): typ obiektu nieobsługiwany — pominięto.")
                 it = None
             if it:
+                it["rotation"] = _qt_rotation(o)
                 # odnośnik do obiektu wzoru: przy zapisie .btw tu trafią zmiany (dx/dy: róg elementu - zaczepienie)
                 it["btw"] = {"pos": o["pos"], "name": o["name"],
                              "dx": round(it["x"] - o["x"] * MIL, 3), "dy": round(it["y"] - o["y"] * MIL, 3)}
@@ -569,7 +616,8 @@ class Writer:
                         cands.append((len(shared) > 1, len(vals) - len(runs), o["y"], o["x"], o))
                 o = min(cands, key=lambda c: c[:4])[4] if cands else None
             else:
-                want = {"barcode": lambda c: c.startswith("Bc"), "code2d": lambda c: c == "PictureData"}.get(it["kind"])
+                want = {"barcode": lambda c: c in BARCODES,
+                        "code2d": lambda c: c in ("PictureData", "BcQrcodeData")}.get(it["kind"])
                 o = next((o for o in free if want and want(o["cls"])), None)
             if o is None:
                 pairs.append((it, None))
@@ -654,7 +702,7 @@ class Writer:
         if not vals:
             return
         if full:  # etykieta spoza BarTendera: szerokość symbolu, wysokość kresek i czcionka cyfr jak w programie
-            m = re.compile(rb"\xff{8}([\s\S]{4})\x00\x00([\s\S]{4})\x00[\x00\x01]").search(d, vals[0][1], o["stop"])
+            m = _BC_SIZE.search(d, vals[0][1], o["stop"])
             b = items.make_item(it)
             if m and b._pattern:
                 self.edits += [(m.start() + 8, m.start() + 12, struct.pack("<i", round(b.module * len(b._pattern) / MIL))),
@@ -703,6 +751,21 @@ class Writer:
         e = props.end()  # rozmiar obrazu [mils] w ustawieniach obiektu
         if abs(w - _i32(d, e + 32) * MIL) > 0.05:
             self.edits.append((e + 32, e + 40, struct.pack("<ii", round(w / MIL), round(w / MIL))))
+
+    def qr_native(self, o, it, label):
+        """Kod QR BarTendera: obie kopie danych i bok symbolu (BarTender sam dobiera wersję i moduł)."""
+        d = self.d
+        vals = _values(d, o["end"], o["stop"])
+        if not vals:
+            return
+        old = vals[0][0]
+        if it["data"] != old:
+            for m in re.finditer(re.escape(_cs(old)), d[o["end"]:o["stop"]]):
+                self.edits.append((o["end"] + m.start(), o["end"] + m.end(), _cs(it["data"])))
+        m = _BC_SIZE.search(d, vals[0][1], o["stop"])
+        side = items.make_item(it).size_mm()[0]
+        if m and abs(side - _i32(m.group(2), 0) * MIL) > 0.05:
+            self.edits.append((m.start() + 14, m.start() + 18, struct.pack("<i", round(side / MIL))))
 
     def preview(self, header):
         """Nowy podgląd (miniatura w BarTenderze i w Windows): pierwszy PNG z długością przed nim."""
@@ -753,14 +816,16 @@ class Writer:
             x, y = it["x"] - ref["dx"], it["y"] - ref["dy"]
             if abs(x - o["x"] * MIL) > 0.01 or abs(y - o["y"] * MIL) > 0.01:
                 self.edits.append((o["pos"], o["pos"] + 8, struct.pack("<ii", round(x / MIL), round(y / MIL))))
-            if it.get("rotation"):
+            if it.get("rotation", 0) % 360 != _qt_rotation(o):
                 self.note(f"{label}: obrót nie jest zapisywany do BarTendera.")
             if it["kind"] == "text" and o["cls"] == "TextData":
                 (self.text_full if ref.get("full") else self.text)(o, it, label)
-            elif it["kind"] == "barcode" and o["cls"].startswith("Bc"):
+            elif it["kind"] == "barcode" and o["cls"] in BARCODES:
                 self.barcode(o, it, label, full=ref.get("full", False))
             elif it["kind"] == "code2d" and o["cls"] == "PictureData":
                 self.qr(o, it, ref, label)
+            elif it["kind"] == "code2d" and o["cls"] == "BcQrcodeData":
+                self.qr_native(o, it, label)
         for o in objs.values():
             if o["pos"] not in used and not self.auto:  # w szablonie wolne pola opisuje auto_map
                 self.note(f"„{o['name']}”: usunięty w programie — w pliku BarTendera zostaje.")
