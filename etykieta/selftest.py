@@ -259,6 +259,18 @@ bdoc2, notes = roundtrip(bdoc, "test_zapis.btw")
 bt2 = make_item(bdoc2["items"][0])
 assert bt2.content() == "Zażółć\nAla ma kota" and not notes, (bt2.content(), notes)
 assert abs(bt2.get("x") + bt2.size_mm()[0] / 2 - 40) < 0.05 and abs(bt2.get("y") - 2.54) < 0.01
+# zmiana czcionki po imporcie (10 pt pogrubiona -> 14 pt zwykła) trafia do pliku
+from items import scale_doc_fonts  # noqa: E402
+scale_doc_fonts(bt2.document(), 1.4, exact=True)
+cur = bt2.textCursor()
+cur.select(cur.SelectionType.Document)
+fmt = cur.charFormat()
+fmt.setFontWeight(400)
+cur.mergeCharFormat(fmt)
+bdoc2["items"][0] = bt2.to_dict()
+bdoc3, notes = roundtrip(bdoc2, "test_czcionka.btw")
+assert btw._runs(bdoc3["items"][0])[0][1] == ("Arial", 14.0, False, False, False) and not notes, \
+    (btw._runs(bdoc3["items"][0]), notes)
 # zapis etykiety z programu do szablonu .btw: treść, czcionka, szerokość, wyrównanie i położenie z programu
 fresh = TextItem("")
 fresh.html = '<p style="font-family:\'Verdana\'; font-size:12pt;"><b>Nowy tekst</b></p>'
