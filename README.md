@@ -22,7 +22,7 @@ A Windows desktop app for designing and printing product labels, in the spirit o
   - Any Windows printer driver.
   - Also: roll direction (0/90/180/270°), output mode (tear-off, peel-off, rewind, cutter, applicator), X/Y offsets and several labels across the roll.
   - A roll preview shows how labels leave the printer.
-- **Export**: a dimension drawing (PDF) with a measurement table covering positions, font sizes and cap heights, barcode module and magnification. Also vector PDF, SVG and PNG.
+- **Export**: a dimension drawing (PDF) with a measurement table covering positions, font sizes and cap heights, the measured height of one uppercase and one lowercase letter taken from each text (mm and cm), barcode module and magnification. Also vector PDF, SVG and PNG.
 - **Project files `.etk`**: JSON with images embedded. Double-click opens them, because the .exe registers the file type for the current Windows user.
 - **BarTender import (`.btw`)**: opens BarTender 2022 labels without BarTender installed.
   - Reads label size, rich text (bold runs, wrapping, alignment, the nine anchor points), EAN/UPC/Code 128/Code 39, and pictures.
@@ -112,7 +112,7 @@ Plik → „Zapisz dla BarTendera (.btw)…” tworzy nowy plik .btw z etykiety 
 - Moduły kodów są wyrównywane do pełnych punktów głowicy. Dokumentacja wymiarowa podaje wartość efektywną.
 
 ### Eksport
-- **Dokumentacja wymiarowa (PDF)**: rysunek w skali z wymiarami etykiety i numerami elementów oraz tabela (X, Y, szerokość, wysokość, obrót, czcionki, parametry kodów).
+- **Dokumentacja wymiarowa (PDF)**: rysunek w skali z wymiarami etykiety i numerami elementów oraz tabela (X, Y, szerokość, wysokość, obrót, czcionki, parametry kodów). Przy każdej czcionce jest zmierzona wysokość przykładowej dużej i małej litery z tekstu, w mm i cm.
 - PDF wektorowy, SVG, PNG w wybranej rozdzielczości.
 
 ### Budowanie .exe

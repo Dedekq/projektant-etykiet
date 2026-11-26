@@ -173,6 +173,14 @@ assert abs(w75 / w70 - 7.5 / 7.0) < 0.01, (w70, w75)   # bez poprawki: 49,4 vs 5
 assert abs(x70 - x75) < 0.15, (x70, x75)               # lewa krawędź stoi w miejscu
 meta = output.build_scene(doc, v); rows = output.item_rows(meta)
 assert any("Arial 10 pt" in r[8] for r in rows), [r[8] for r in rows]  # tabela wymiarów bez ×8
+# wysokość przykładowej dużej i małej litery z tekstu (Arial: wersalik 0,716 em, x 0,519 em; 10 pt = 3,528 mm)
+from PySide6.QtGui import QFont  # noqa: E402
+from items import letter_height_mm, pick_letter  # noqa: E402
+f10 = QFont("Arial")
+f10.setPointSizeF(10)
+assert abs(letter_height_mm(f10, "H") - 2.526) < 0.03 and abs(letter_height_mm(f10, "x") - 1.831) < 0.04
+assert (pick_letter("Ąla ma kota", True), pick_letter("Ąla ma kota", False)) == ("Ą", "a")  # bez płaskiej: dowolna
+assert any("duża „W” 2,52 mm (0,252 cm)" in r[8] and "mała „o”" in r[8] for r in rows), [r[8] for r in rows]
 
 # skojarzenie .etk: tymczasowy klucz HKCU (prawdziwe skojarzenia nietknięte), udajemy zbudowany .exe
 import subprocess  # noqa: E402
