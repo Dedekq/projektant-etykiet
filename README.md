@@ -33,7 +33,7 @@ A Windows desktop app for designing and printing product labels, in the spirit o
 - **Save for BarTender (`.btw`)**: File → Save for BarTender writes a new `.btw` file from a label that was opened from `.btw`.
   - The original file is kept inside the project as a template, so the `.etk` can be moved freely.
   - The program writes text content, barcode data, the QR code (new SVG plus its CRC32) and element positions into a copy of the template, and regenerates the preview thumbnail.
-  - Fonts and sizes stay as in the template. Elements added in the program are not transferred, and elements deleted in the program stay in the `.btw`. A summary lists both after saving.
+  - Font changes made after opening (size, bold, italic, typeface) are written too. In fixed-size boxes the box is scaled with the font, because BarTender fits the font to the box. Elements added in the program are not transferred, and elements deleted in the program stay in the `.btw`. A summary lists both after saving.
   - Verified in BarTender 2022: the edited file opens with the new data.
   - **Labels made in the program** go into a *template* `.btw`: an empty BarTender label with one EAN-13 and enough text fields (e.g. 80 copies of “a”, no formatting needed).
     - The program writes text, font, size, bold/italic, position and barcode size, and changes the label size if the template differs.
@@ -86,7 +86,7 @@ Plik → Otwórz przyjmuje też pliki .btw z BarTendera 2022, bez instalowania B
 Plik → „Zapisz dla BarTendera (.btw)…” tworzy nowy plik .btw z etykiety otwartej wcześniej z pliku .btw.
 - Oryginalny plik jest wzorem i zostaje zapisany w projekcie .etk, więc projekt można przenosić bez pliku .btw.
 - Do kopii wzoru trafiają: treści tekstów, dane kodów kreskowych, kod QR (nowy obraz SVG z sumą CRC32) i położenie elementów. Miniatura podglądu jest generowana od nowa.
-- Czcionki i rozmiary zostają takie jak we wzorze. Elementy dodane w programie nie trafiają do .btw, a usunięte w programie zostają w .btw. Po zapisie program wypisuje jedne i drugie.
+- Zapisywane są też zmiany czcionek zrobione po otwarciu (wielkość, pogrubienie, kursywa, krój). W polach o stałym rozmiarze ramka jest skalowana razem z czcionką, bo BarTender dopasowuje czcionkę do ramki. Elementy dodane w programie nie trafiają do .btw, a usunięte w programie zostają w .btw. Po zapisie program wypisuje jedne i drugie.
 - Sprawdzone w BarTenderze 2022: zmieniony plik otwiera się z nowymi danymi.
 - **Etykiety zrobione w programie** trafiają do *szablonu* `.btw`. Szablon to pusta etykieta BarTendera z jednym kodem EAN-13 i odpowiednią liczbą pól tekstowych (np. 80 kopii pola „a”, bez formatowania).
   - Program zapisuje treść, czcionkę, wielkość, pogrubienie i kursywę, położenie oraz wymiary kodu. Jeśli szablon ma inny rozmiar, program go zmienia.

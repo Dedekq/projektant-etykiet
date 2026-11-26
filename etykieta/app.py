@@ -672,8 +672,8 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, APP, f"Nie zapisano pliku BarTendera:\n{ex}")
             return
         what = ("treści, czcionki, wielkości, zawijanie i wyrównanie tekstów, kody i położenie elementów"
-                if template else "treści tekstów, dane kodów, kod QR i położenie elementów; czcionki i rozmiary "
-                "zostają ze wzoru")
+                if template else "treści tekstów, zmienione czcionki (wielkość, pogrubienie, kursywa), dane kodów, "
+                "kod QR i położenie elementów")
         QMessageBox.information(self, APP, f"Zapisano {os.path.basename(path)}.\n\nDo BarTendera trafiają {what}. "
                                 "Przed drukiem otwórz plik w BarTenderze i sprawdź."
                                 + ("\n\nUwagi:\n• " + "\n• ".join(notes) if notes else ""))

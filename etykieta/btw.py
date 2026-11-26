@@ -439,6 +439,11 @@ class Importer:
                              "dx": round(it["x"] - o["x"] * MIL, 3), "dy": round(it["y"] - o["y"] * MIL, 3)}
                 if it["kind"] == "code2d":
                     it["btw"]["qr"] = it["data"]
+                elif it["kind"] == "text":  # czcionki z importu: przy zapisie trafią do pliku tylko te zmienione
+                    vals = _values(self.d, o["end"], o["stop"])
+                    it["btw"]["fmts"] = _value_formats(it, _shown(vals, _fixed_box(self.d, o, vals)[0]))
+                elif it["kind"] == "barcode":
+                    it["btw"]["font"] = [it["font_size"], it["text_bold"]]
                 out.append(it)
         for face in sorted(self._replaced):
             self.warn(f"Czcionka „{face}” nie jest zainstalowana — zastąpiona Arial.")
@@ -497,6 +502,22 @@ def _svg_qr(data, ecc):
             f'<svg width="{size}mm" height="{size}mm" version="1.1" viewBox="0 0 {size} {size}" '
             f'xmlns="http://www.w3.org/2000/svg"><path d="{path}" id="qr-path" fill="#000000" fill-opacity="1" '
             'fill-rule="nonzero" stroke="none"/></svg>').encode()
+
+
+def _value_formats(it, parts):
+    """Format tekstu elementu na początku każdej wartości BarTendera (parts: wartości tak, jak widać je w polu);
+    None dla wartości pustej. Format: (rodzina, pt, pogrubienie, kursywa, podkreślenie) jak w _runs."""
+    runs, out, pos = _runs(it), [], 0
+    for p in parts:
+        at, acc, fmt = pos + len(p) - len(p.lstrip()), 0, None
+        for text, f in runs:
+            if at < acc + len(text):
+                fmt = list(f)
+                break
+            acc += len(text)
+        out.append(fmt if p.strip() else None)
+        pos += len(p)
+    return out
 
 
 def _runs(it):
@@ -679,28 +700,65 @@ class Writer:
         if it.get("line_height", 100) != 100:
             self.note(f"{label}: interlinii ({it['line_height']}%) BarTender nie dostaje — zostaje ze szablonu.")
 
-    def text(self, o, it, label):
-        d = self.d
-        vals = _values(d, o["end"], o["stop"])
-        parts = _shown(vals, _fixed_box(d, o, vals)[0]) if vals else []
-        new = items.make_item(it).content().replace("\u2028", "\n")
-        if not vals or new == "".join(parts):
-            return
-        if re.search(r"\{[^}]+\}", new):
-            self.note(f"{label}: zmienne {{…}} BarTender pokaże jako zwykły tekst.")
-        out, merged = _spread(parts, new)
-        if merged:
-            self.note(f"{label}: zmiana objęła fragmenty o różnym formatowaniu — dostały format pierwszego.")
-        for v, was, now in zip(vals, parts, out):
-            if now != was:
-                tail = v[0][len(was):]  # końcowe \r, które BarTender pomija w polu
-                self.edits.append((v[3], v[1], _cs(now.replace("\n", "\r") + tail)))
-
-    def barcode(self, o, it, label, full=False):
+    def text(self, o, it, label, ref):
         d = self.d
         vals = _values(d, o["end"], o["stop"])
         if not vals:
             return
+        fixed = _fixed_box(d, o, vals)[0]
+        parts = _shown(vals, fixed)
+        new = items.make_item(it).content().replace("\u2028", "\n")
+        out = parts
+        if new != "".join(parts):
+            if re.search(r"\{[^}]+\}", new):
+                self.note(f"{label}: zmienne {{…}} BarTender pokaże jako zwykły tekst.")
+            out, merged = _spread(parts, new)
+            if merged:
+                self.note(f"{label}: zmiana objęła fragmenty o różnym formatowaniu — dostały format pierwszego.")
+            for v, was, now in zip(vals, parts, out):
+                if now != was:
+                    tail = v[0][len(was):]  # końcowe \r, które BarTender pomija w polu
+                    self.edits.append((v[3], v[1], _cs(now.replace("\n", "\r") + tail)))
+        self.text_fonts(o, it, label, ref, vals, fixed, out)
+
+    def text_fonts(self, o, it, label, ref, vals, fixed, parts):
+        """Czcionki zmienione po imporcie (wielkość, pogrubienie, kursywa, krój) -> LOGFONT wartości."""
+        if "fmts" not in ref:
+            self.note(f"{label}: etykieta otwarta starszą wersją programu — zmiany czcionek nie są zapisywane; "
+                      "otwórz plik .btw ponownie.")
+            return
+        d = self.d
+        own = {v[1] + 13 for v in vals if v[2]}
+        shared = [s for s, _f in _fonts(d, o["end"], o["stop"]) if s not in own]  # wspólna czcionka pola
+        changes = {}  # początek LOGFONT -> (format z importu, nowy format)
+        for v, was, now in zip(vals, ref["fmts"], _value_formats(it, parts)):
+            if was and now and now != was:
+                for s in ([v[1] + 13] if v[2] else shared):
+                    if changes.setdefault(s, (was, now))[1] != now:
+                        self.note(f"{label}: fragmenty o wspólnej czcionce dostały różne formaty — zapisano pierwszy.")
+        for s, (was, now) in changes.items():
+            face, pt = _logfont(d, s)[:2]
+            # pole o stałym rozmiarze: BarTender dopasowuje czcionkę do ramki, więc zmieniamy ją proporcjonalnie
+            new_pt = pt * now[1] / was[1] if fixed else now[1]
+            self.font(s, (face if now[0] == was[0] else now[0], new_pt, *now[2:]))
+        if changes and fixed:
+            # ...i ramkę o tyle samo (BarTender dopasowuje czcionkę do ramki; zaczepienie zostaje w miejscu)
+            was, now = next(iter(changes.values()))
+            k = now[1] / was[1]
+            hit = list(_SIZE.finditer(d, vals[-1][1], o["stop"]))[-1].start()
+            self.edits += [(hit - 49, hit - 45, struct.pack("<i", round(_i32(d, hit - 49) * k))),
+                           (hit - 24, hit - 16, struct.pack("<ii", round(_i32(d, hit - 24) * k), round(_i32(d, hit - 20) * k)))]
+
+    def barcode(self, o, it, label, full=False, ref=None):
+        d = self.d
+        vals = _values(d, o["end"], o["stop"])
+        if not vals:
+            return
+        fonts = _fonts(d, vals[0][1], o["stop"])
+        was = (ref or {}).get("font")
+        if not full and fonts and was and was != [it["font_size"], it["text_bold"]]:  # czcionka cyfr zmieniona
+            face = fonts[0][1][0]
+            self.font(fonts[0][0], (face, it["font_size"], it["text_bold"], False, False))
         if full:  # etykieta spoza BarTendera: szerokość symbolu, wysokość kresek i czcionka cyfr jak w programie
             m = _BC_SIZE.search(d, vals[0][1], o["stop"])
             b = items.make_item(it)
@@ -819,9 +877,9 @@ class Writer:
             if it.get("rotation", 0) % 360 != _qt_rotation(o):
                 self.note(f"{label}: obrót nie jest zapisywany do BarTendera.")
             if it["kind"] == "text" and o["cls"] == "TextData":
-                (self.text_full if ref.get("full") else self.text)(o, it, label)
+                self.text_full(o, it, label) if ref.get("full") else self.text(o, it, label, ref)
             elif it["kind"] == "barcode" and o["cls"] in BARCODES:
-                self.barcode(o, it, label, full=ref.get("full", False))
+                self.barcode(o, it, label, full=ref.get("full", False), ref=ref)
             elif it["kind"] == "code2d" and o["cls"] == "PictureData":
                 self.qr(o, it, ref, label)
             elif it["kind"] == "code2d" and o["cls"] == "BcQrcodeData":
