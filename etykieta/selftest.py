@@ -229,6 +229,14 @@ assert "font-weight:700" in bdoc["items"][0]["html"] and "10pt" in bdoc["items"]
 # archiwum zgodne z BarTenderem 10.1 (ArchiveVersion 88634): nagłówek obiektu bez bajtu \x01
 old_raw = raw.replace(zlib.compress(stream), zlib.compress(stream.replace(cs("") + cs("") + b"\x01", cs("") + cs(""), 1)))
 assert make_item(btw.Importer(old_raw).run()[0]["items"][0]).content() == "Zażółć\nAla"
+# w nagłówku obiektu za zaczepieniem bywają dane (obrót w tysięcznych stopnia od 3. bajtu, przesunięcia) — obiekt
+# nie może przez to zniknąć; obrócony obiekt: x, y = lewy górny róg obrysu na etykiecie
+rot_stream = stream.replace(b"\x00\x01\x01" + bytes(21), b"\x00\x01\x01" + bytes(3) + struct.pack("<i", 90000)
+                            + bytes(7) + b"\x04" + bytes(6), 1)
+rot = btw.Importer(raw.replace(zlib.compress(stream), zlib.compress(rot_stream))).run()[0]["items"][0]
+rt = make_item(rot)
+assert rot["rotation"] == 90 and rt.content() == "Zażółć\nAla", rot["rotation"]
+assert abs(rot["x"] + rt.size_mm()[0] / 2 - (35 + rt.size_mm()[1] / 2)) < 0.05  # środek w środku obrysu
 try:
     btw.Importer(b"to nie jest btw")
     raise AssertionError("brak błędu dla złego pliku")
